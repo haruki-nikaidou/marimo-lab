@@ -68,7 +68,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 1. Parameters
@@ -211,7 +211,7 @@ def _(L, T, alpha, mo, n, q, seats, share, tf):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 2. The exact mechanism
@@ -474,7 +474,7 @@ def _(norm, np):
     return fluid, overhang, scaled_model, top_mass
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ### Fair baseline
@@ -507,7 +507,7 @@ def _(T, group_means, h, mc, mdl, mo, n, np, q, reps, tf, top_mass):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 3. Playground: an arbitrary reservation profile
@@ -675,7 +675,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 4. Q1 — the top tier: dead zone, swap price, convexity
@@ -890,7 +890,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 5. Q2 — the damage travels as a wave, and mostly reshuffles
@@ -1010,7 +1010,7 @@ def _(np, plt, q, q2_k, q2_res, q2_th):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 6. Q3 — two shocks: additive when apart, superadditive when they overlap
@@ -1211,7 +1211,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 7. Q4 — the total bill in closed form
@@ -1332,7 +1332,7 @@ def _(np, plt, q4_exact, q4_quad, q4_res, q4_sim):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## 8. Q5 — where should a fixed quota budget go?
@@ -1897,7 +1897,7 @@ def _(np, plt, q7_dry, q7_err, q7_inside, q7_ns, q7_reps, q7_sd, q7_signed):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Takeaways
