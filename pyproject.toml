@@ -1,0 +1,54 @@
+[project]
+name = "marimo-lab"
+version = "0.1.0"
+description = "marimo research workspace"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "marimo[recommended]>=0.16.0",
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "matplotlib>=3.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/marimo_lab"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# A marimo cell renders its last expression; that is not a useless statement.
+"notebooks/*.py" = ["B018"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# marimo project settings; these override user-level ~/.config/marimo/marimo.toml.
+[tool.marimo.package_management]
+manager = "uv"
+
+[tool.marimo.display]
+default_width = "medium"
+
+[tool.marimo.formatting]
+line_length = 88
+
+[tool.marimo.save]
+autosave = "after_delay"
+format_on_save = true

@@ -149,7 +149,7 @@ activemq-data/
 
 # Environments
 .env
-.envrc
+.direnv/
 .venv
 env/
 venv/
@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Nix
+result
+result-*
+
+# Local research data and exports (keep directory scaffolding)
+data/**
+!data/**/
+!data/**/.gitkeep
+exports/
