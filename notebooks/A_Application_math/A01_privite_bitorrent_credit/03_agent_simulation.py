@@ -108,10 +108,10 @@ def _(mo):
         show_value=True,
     )
     ui_eta = mo.ui.slider(
-        start=0.0,
-        stop=1.4,
-        step=0.1,
-        value=0.7,
+        start=0.9,
+        stop=1.1,
+        step=0.01,
+        value=1.0,
         label=r"size exponent $\eta$",
         show_value=True,
     )
@@ -323,7 +323,7 @@ def _(np, plt, runs, scales):
 
 
 @app.cell(hide_code=True)
-def _(mo, np, runs, scales):
+def _(mo, np, reward, runs, scales):
     _acc = {_s: runs[_s].acceptance(days=7) for _s in scales}
     _med = [_acc[_s]["median_C_all"] for _s in scales]
     _p90 = [_acc[_s]["avail_p90_C"] for _s in scales]
@@ -333,10 +333,32 @@ def _(mo, np, runs, scales):
     _spread = (max(_finite) - min(_finite)) if _finite else float("nan")
     _r1 = runs[1.0]
     _per = _r1.members_total[-1] / _r1.catalog.n_torrents
+    _cat = _r1.catalog
+    _held = _r1.final_members * _cat.size_gib
+    _tenth = np.argsort(_r1.final_members)[-_cat.n_torrents // 10 :]
     _share_top = float(
-        np.sort(_r1.final_members)[-_r1.catalog.n_torrents // 10 :].sum()
-        / max(_r1.final_members.sum(), 1)
+        _r1.final_members[_tenth].sum() / max(_r1.final_members.sum(), 1)
     )
+    _share_top_disk = float(_held[_tenth].sum() / max(_held.sum(), 1e-9))
+    _big = _cat.class_idx >= 2
+    _cat_share_big = float(_cat.size_gib[_big].sum() / _cat.size_gib.sum())
+    _held_share_big = float(_held[_big].sum() / max(_held.sum(), 1e-9))
+    _fin_big = _r1.final_slowdown[_big]
+    _med_big = float(np.median(_fin_big[np.isfinite(_fin_big)]))
+    _copies = float(_r1.user_disk_budget.sum() / _cat.size_gib.sum())
+    _at_floor = float(np.mean(_r1.final_slowdown <= 1.0 + 1e-9))
+    _tilt = reward.eta - 1.0
+    if abs(_tilt) < 1e-9:
+        _tilt_note = (
+            "it is not a size bias: at the default $\\eta = 1$ the pay per "
+            "GiB of disk is flat in size"
+        )
+    else:
+        _tilt_note = (
+            "the control adds a size tilt to it: pay per GiB of disk scales "
+            f"as $\\text{{size}}^{{{_tilt:+.2f}}}$, favouring the "
+            f"{'small' if _tilt < 0 else 'large'} end"
+        )
     mo.md(rf"""
     > [!note] Two of the three clauses pass; the one that fails is the
     > interesting one
@@ -352,20 +374,26 @@ def _(mo, np, runs, scales):
     > $\gamma = 4$. (The $C$ quantiles are a poor oscillation proxy: they also
     > move with the unavailable mass, and can be infinite.)
     >
-    > **Collapse *onto* $C^*$: no.** The median settles near {_med[1]:.2f},
-    > below $C^* = 1.5$ — the median torrent is over-provisioned.
+    > **Collapse *onto* $C^*$: no.** The median settles at {_med[1]:.2f},
+    > below $C^* = 1.5$ — the median torrent is over-provisioned, so
+    > $\Delta H \approx 0$ and only the flat floor $\alpha$ pays it.
     >
-    > The cause is **uneven allocation, not aggregate abundance**. Part 1's
-    > world holds fewer copies of its catalogue than the ~15 seeders a torrent
-    > needs to reach $x^* = d_{{ref}}/C^*$, so on average there is *not*
-    > enough disk to put every torrent on target. But capacity is not spread
-    > evenly: at ×1 disk the site averages {_per:.0f} memberships per torrent
-    > while the most-seeded tenth of the catalogue absorbs
-    > {_share_top:.0%} of all memberships. With $\eta = 0.7$ the reward per
-    > GiB of disk scales as $S^{{\eta}}/\text{{size}} \propto
-    > \text{{size}}^{{-0.3}}$, so seeders crowd onto the smallest torrents,
-    > push them past the knee where $\Delta H \approx 0$, and leave the rest
-    > of the catalogue to the flat floor $\alpha$.
+    > The cause is **allocation, not aggregate abundance**, and at
+    > $\eta = {reward.eta:.2f}$ {_tilt_note}. Measured in bytes this
+    > population can afford only {_copies:.1f} whole copies of the
+    > catalogue — fewer than the ~15
+    > seeders a torrent needs to reach $x^* = d_{{ref}}/C^*$ — but measured
+    > in *count* most of the catalogue sits far below the median size, so
+    > the site still averages {_per:.0f} memberships per torrent and holds
+    > {_at_floor:.0%} of the catalogue at the $C = 1$ floor. Where the disk
+    > actually lands: large and
+    > super-large releases are {_cat_share_big:.0%} of the catalogue's bytes
+    > and hold {_held_share_big:.0%} of all committed disk, at a median
+    > $C_i$ of {_med_big:.2f}. Memberships still look lopsided — the
+    > most-seeded tenth of the catalogue absorbs {_share_top:.0%} of them —
+    > but that same tenth is only {_share_top_disk:.0%} of the committed
+    > bytes: a GiB of disk simply buys more small torrents, so membership
+    > counts overstate how concentrated the committed disk is.
     >
     > **What disk supply moves is the tail, not the median.** The
     > available-torrent p90 goes {_p90[0]:.2f} → {_p90[1]:.2f} →
@@ -547,10 +575,17 @@ def _(mo):
     mo.md(r"""
     ## 6. Sensitivity: the three open decisions of §9
 
-    Each variant re-runs the same world with one change.
+    Each variant re-runs the same world with one change. Unlike §2–§5, this
+    block does **not** follow the $\eta$ control above: its baseline is
+    pinned to the size-neutral $\eta = 1$ so that the two $\eta$ rows always
+    bracket it and every other row is read against the same reference.
+    Everything else — $\kappa$, $\alpha$, $\gamma$, the world size and the
+    seed — still comes from the controls.
 
     * **$\eta$** — part 2 showed analytically that only $\eta = 1$ is
-      size-neutral; here it is measured as the dead fraction by size class.
+      size-neutral, so $\eta = 1$ is the baseline; the two rows at the ends of
+      the admissible band, $\eta = 0.9$ and $\eta = 1.1$, price a ±10 % tilt,
+      measured as the dead fraction by size class.
     * **importance** — pay scaling vs target scaling.
     * **hysteresis** — $C^*_{stay} = 1.1\,C^*$ for incumbents.
     * **pinned uploader** — *not part of the specified mechanism*. It gives
@@ -569,18 +604,22 @@ def _(mo):
 
 @app.cell
 def _(RewardParams, base, mo, reward, simulate):
+    # Pinned to the size-neutral exponent: the eta rows below are meant to
+    # bracket eta = 1, so the baseline cannot drift with the slider.
+    neutral = RewardParams(**{**reward.__dict__, "eta": 1.0})
     variants = {
-        "baseline": (reward, {}),
-        "eta = 1.0": (RewardParams(**{**reward.__dict__, "eta": 1.0}), {}),
+        "baseline": (neutral, {}),
+        "eta = 0.9": (RewardParams(**{**neutral.__dict__, "eta": 0.9}), {}),
+        "eta = 1.1": (RewardParams(**{**neutral.__dict__, "eta": 1.1}), {}),
         "importance -> target": (
-            RewardParams(**{**reward.__dict__, "importance_mode": "target"}),
+            RewardParams(**{**neutral.__dict__, "importance_mode": "target"}),
             {},
         ),
-        "hysteresis 1.1": (reward, {"stay_bonus": 1.1}),
-        "pinned uploader": (reward, {"pin_uploader": True}),
-        "alpha = 0": (RewardParams(**{**reward.__dict__, "alpha": 0.0}), {}),
+        "hysteresis 1.1": (neutral, {"stay_bonus": 1.1}),
+        "pinned uploader": (neutral, {"pin_uploader": True}),
+        "alpha = 0": (RewardParams(**{**neutral.__dict__, "alpha": 0.0}), {}),
         "batched replanning": (
-            reward,
+            neutral,
             {"decision_share": 0.25, "moves_per_decision": 6},
         ),
     }
@@ -696,13 +735,33 @@ def _(mo, np, runs, variant_runs):
         _m = _r.catalog.class_idx >= 2
         return float(np.mean(~np.isfinite(_r.final_slowdown[_m])))
 
+    def _class_median(name, cls):
+        """Median finite ``C_i`` within one size class."""
+        _r = variant_runs[name]
+        _f = _r.final_slowdown[_r.catalog.class_idx == cls]
+        _f = _f[np.isfinite(_f)]
+        return float(np.median(_f)) if _f.size else float("nan")
+
+    def _class_medians(name):
+        """Median ``C_i`` for small / medium / large, as a string."""
+        return " / ".join(f"{_class_median(name, _j):.2f}" for _j in range(3))
+
+    def _small_members(name):
+        _r = variant_runs[name]
+        return float(_r.final_members[_r.catalog.class_idx == 0].mean())
+
+    # ``_base`` is the pinned eta = 1 reference of §6; ``_sweep`` is the
+    # interactive run of §2-§5, which follows the controls. Never mix them
+    # inside one claim.
     _base = variant_runs["baseline"].acceptance(days=7)
-    _eta1 = variant_runs["eta = 1.0"].acceptance(days=7)
+    _eta_lo = variant_runs["eta = 0.9"].acceptance(days=7)
+    _eta_hi = variant_runs["eta = 1.1"].acceptance(days=7)
     _tgt = variant_runs["importance -> target"].acceptance(days=7)
     _hyst = variant_runs["hysteresis 1.1"].acceptance(days=7)
     _pin = variant_runs["pinned uploader"]
     _scarce = runs[0.25].acceptance(days=7)
     _r1 = runs[1.0]
+    _sweep = runs[1.0].acceptance(days=7)
     _bal, _disk = _r1.final_balance, _r1.user_disk_budget
     _rank = float(
         np.corrcoef(np.argsort(np.argsort(_disk)), np.argsort(np.argsort(_bal)))[0, 1]
@@ -717,7 +776,7 @@ def _(mo, np, runs, variant_runs):
     1. **The knee is robust, but saturated at the median.** Disk supply barely
        moves the median $C_i$, which is the property §4 argued for. What it
        does not do is hold the median *at* $C^*$: the median torrent sits at
-       {_base["median_C_all"]:.2f}, over-provisioned, so $\Delta H \approx 0$
+       {_sweep["median_C_all"]:.2f}, over-provisioned, so $\Delta H \approx 0$
        and the flat floor $\alpha$ is what actually pays most memberships.
        $\alpha$ is not a rounding term, it is the main reward. The share of
        mint coming from $\alpha$ belongs in §8's permanent instrumentation
@@ -740,8 +799,8 @@ def _(mo, np, runs, variant_runs):
        until $\lceil \ln(1-\pi_{{min}})/\ln(1-\tilde p_v)\rceil$ of them
        arrive together. In this over-provisioned run the measured cost is
        modest — large-torrent unavailability
-       {_unavail_large("baseline"):.0%} baseline vs
-       {_unavail_large("pinned uploader"):.0%} with protected initial holders
+       {_unavail_large("baseline"):.1%} baseline vs
+       {_unavail_large("pinned uploader"):.1%} with protected initial holders
        (covering {_pin.pinned_coverage:.0%} of the catalogue) — but it is
        what leaves the ×0.25 column without a *directed* way back: recovery
        depends on $\alpha$-driven random browsing rather than on any reward
@@ -749,14 +808,34 @@ def _(mo, np, runs, variant_runs):
        completeness continuous, e.g. paying
        $\min(1, A_i/\pi_{{min}}) \cdot H(C_i)$.
 
-    4. **$\eta$ should be 1, not 0.7** (§9, first open decision). Part 2
-       derives it in closed form: reward per GiB of disk is size-neutral iff
-       $\eta = 1$. The sweep agrees — $\eta = 1$ takes the available-torrent
-       p90 from {_base["avail_p90_C"]:.2f} to {_eta1["avail_p90_C"]:.2f} and
-       large-torrent unavailability from {_unavail_large("baseline"):.0%} to
-       {_unavail_large("eta = 1.0"):.0%}. At $\eta = 0.7$ a GiB of disk spent
-       on a large torrent pays a fraction of what it pays on a small one, so
-       seeders crowd the small end and the large end starves. If a
+    4. **$\eta = 1$, and the band around it is tight** (§9, first open
+       decision). Part 2 derives it in closed form: reward per GiB of disk is
+       size-neutral iff $\eta = 1$, which is why it is the default here and
+       why §3.6 now starts there rather than at the original $0.7$, with the
+       slow job clamped to the band. The sweep prices a ±10 % tilt. Median
+       $C_i$ by size class (small / medium / large) is flat only at the
+       neutral point — {_class_medians("baseline")} at $\eta = 1$, against
+       {_class_medians("eta = 0.9")} at $0.9$ and
+       {_class_medians("eta = 1.1")} at $1.1$ — and the available-torrent p90
+       is lowest there: {_base["avail_p90_C"]:.2f} against
+       {_eta_lo["avail_p90_C"]:.2f} and {_eta_hi["avail_p90_C"]:.2f}. The two
+       edges fail differently. At $0.9$ a GiB spent on a large torrent pays
+       less than the same GiB on a small one, so seeders crowd the small end
+       — {_small_members("eta = 0.9"):.0f} memberships on the average small
+       torrent against {_small_members("baseline"):.0f} at $\eta = 1$ — and
+       large-torrent unavailability roughly doubles,
+       {_unavail_large("baseline"):.1%} → {_unavail_large("eta = 0.9"):.1%}.
+       At $1.1$ the tilt reverses: the small end thins to
+       {_small_members("eta = 1.1"):.0f} memberships, the site holds fewer
+       memberships overall, and the middle of the catalogue drifts off the
+       floor — medium-class median $C_i$
+       {_class_median("eta = 1.1", 1):.2f} against
+       {_class_median("baseline", 1):.2f} — while
+       unavailability barely moves
+       ({_unavail_large("baseline"):.1%} → {_unavail_large("eta = 1.1"):.1%}
+       for large torrents), so that edge is paid in slowdown rather than in
+       lost availability. Ten per cent of exponent is already
+       this visible, so the exponent is not a tuning knob — if a
        small-torrent subsidy is wanted it should be an explicit $w_i$, not a
        silent side effect of the size exponent.
 
@@ -775,8 +854,8 @@ def _(mo, np, runs, variant_runs):
        shelved, as §9 proposes.
 
     7. **A single $\kappa$ cannot fix a distributional problem.** The site
-       mints faster than it burns (ratio {_base["mint_burn"]:.1f}) *and*
-       refuses {_base["broke_per_day"]:.0f} downloads a day for empty
+       mints faster than it burns (ratio {_sweep["mint_burn"]:.1f}) *and*
+       refuses {_sweep["broke_per_day"]:.0f} downloads a day for empty
        balances. §7's panel shows why rather than assuming it: final balance
        ranks with user disk at Spearman {_rank:.2f}, and the richest decile of
        users ends up holding {_top:.0%} of all points. $\alpha$ pays per
@@ -793,11 +872,12 @@ def _(mo, np, runs, variant_runs):
 
     9. **Scope caveat.** This is a deliberately small scenario
        ({_r1.catalog.n_torrents:,} torrents, {_r1.population.n_users:,} users)
-       chosen so the sweep and seven variants run in under a minute. Part 1's
-       default world is larger, and the catalogue-to-node ratio strongly
-       controls both the unavailable fraction and whether $C$ reaches the
-       floor. The qualitative findings above should be re-checked at the
-       larger size before any of them is treated as a production number.
+       chosen so the sweep and {len(variant_runs)} variants run in about a
+       minute. Part 1's default world is larger, and the catalogue-to-node
+       ratio strongly controls both the unavailable fraction and whether $C$
+       reaches the floor. The qualitative findings above should be re-checked
+       at the larger size before any of them is treated as a production
+       number.
     """)
     return
 

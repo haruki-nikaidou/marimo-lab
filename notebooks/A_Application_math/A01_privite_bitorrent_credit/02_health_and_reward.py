@@ -96,10 +96,10 @@ def _(mo):
         show_value=True,
     )
     ui_eta = mo.ui.slider(
-        start=0.0,
-        stop=1.4,
-        step=0.05,
-        value=0.7,
+        start=0.9,
+        stop=1.1,
+        step=0.01,
+        value=1.0,
         label=r"size exponent $\eta$",
         show_value=True,
     )
@@ -680,9 +680,15 @@ def _(mo):
 
     The right-hand side is independent of size **iff $\eta = 1$**. For
     $\eta < 1$ a larger torrent has to be scarcer — carry a higher $\Delta H$,
-    hence fewer seeders and a worse $C_i$ — to be worth the same disk. So the
-    initial value $\eta = 0.7$ is not size-neutral; it is a deliberate
-    ${\sim}S^{-0.3}$ subsidy to small torrents.
+    hence fewer seeders and a worse $C_i$ — to be worth the same disk; for
+    $\eta > 1$ the tilt runs the other way. So $\eta = 1$ is the default
+    everywhere in these notebooks, and the control above spans only
+    $[0.9, 1.1]$: the exponent is not a free gain, it is a size policy, and a
+    value outside that band is a deliberate transfer between size classes
+    rather than a tuning of the same mechanism. The $0.7$ this design first
+    carried is exactly such a transfer — a ${\sim}S^{-0.3}$ subsidy to small
+    torrents, which is why §3.6 now starts at $1$ and clamps the slow job to
+    the same band.
 
     Below, the required $\Delta H$ is inverted back into the equilibrium
     slowdown each size class would settle at, for the actual catalogue of
@@ -714,7 +720,7 @@ def _(cat, g_unit, health, np, par, plt, x_star):
 
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.2))
     _sizes = np.geomspace(0.1, 2048.0, 200)
-    for _eta, _c in ((0.0, "C0"), (0.7, "C1"), (1.0, "C2"), (1.3, "C3")):
+    for _eta, _c in ((0.9, "C0"), (1.0, "C2"), (1.1, "C3")):
         _eq = equilibrium_c(
             _eta, _sizes, par.gamma, par.c_star, par.alpha, cat.median_size
         )
@@ -728,7 +734,7 @@ def _(cat, g_unit, health, np, par, plt, x_star):
     _ax[0].legend(fontsize=7)
 
     _rel = cat.size_gib / cat.median_size
-    for _eta, _c in ((0.0, "C0"), (0.7, "C1"), (1.0, "C2"), (1.3, "C3")):
+    for _eta, _c in ((0.9, "C0"), (1.0, "C2"), (1.1, "C3")):
         _per_gib = _rel**_eta / cat.size_gib
         _order = np.argsort(cat.size_gib)
         _ax[1].plot(
@@ -751,29 +757,47 @@ def _(cat, g_unit, health, np, par, plt, x_star):
 
 @app.cell(hide_code=True)
 def _(cat, mo, np, par):
-    _rel = cat.size_gib / cat.median_size
-    _tilt = _rel**par.eta / cat.size_gib
-    _small = float(np.median(_tilt[cat.class_idx == 0]))
-    _large = float(np.median(_tilt[cat.class_idx == 2]))
-    _super = float(np.median(_tilt[cat.class_idx == 3]))
+    def _pay_ratios(eta):
+        """Pay per GiB of the median small torrent, relative to bigger ones."""
+        _t = (cat.size_gib / cat.median_size) ** eta / cat.size_gib
+        _cls = [float(np.median(_t[cat.class_idx == _j])) for _j in range(4)]
+        return _cls[0] / _cls[2], _cls[0] / _cls[3]
+
+    _vs_large, _vs_super = _pay_ratios(par.eta)
+    _lo_large, _lo_super = _pay_ratios(0.9)
+    _hi_large, _hi_super = _pay_ratios(1.1)
     mo.md(rf"""
     At $\eta = {par.eta:.2f}$ and equal $\Delta H$, a GiB of disk spent on the
-    median **small** torrent pays **{_small / _large:.1f}×** what the same GiB
-    pays on the median **large** torrent, and **{_small / _super:.1f}×** what it
-    pays on a super-large one. A rational seeder therefore fills its disk with
-    the smallest torrents it can find, and the 2 TiB releases are left to
-    whoever has spare disk and no better use for it — which, with the
-    $\pi_{{min}}$ cliff above, is how a catalogue loses its large end first.
+    median **small** torrent pays **{_vs_large:.2f}×** what the same GiB pays
+    on the median **large** torrent, and **{_vs_super:.2f}×** what it pays on
+    a super-large one. At the default $\eta = 1$ both ratios are exactly $1$:
+    that is what size-neutral buys, and it is why the seeder of part 3 has no
+    reason to sort the catalogue by size at all.
 
-    There is a second, unmodelled tilt in the same direction: acquiring a
-    torrent to seed it costs $\phi_i \cdot \text{{size}}_i$ points up front. That
-    does not shift the long-run exponent on its own — dividing both the reward
-    and the acquisition charge by size leaves the comparison intact once the
-    torrent is held forever — but it is a real *finite-horizon* barrier: the
-    shorter the expected holding time, the more of that one-off charge has to
-    be amortised, and the worse large torrents look. Turnover therefore biases
-    the effective break-even exponent upward by an amount this notebook does
-    not model.
+    The admissible band is the region where those ratios stay near one, and it
+    is narrow because the catalogue spans four and a half orders of magnitude.
+    At the bottom of the slider, $\eta = 0.9$, the median small torrent
+    already pays **{_lo_large:.2f}×** the median large one and
+    **{_lo_super:.2f}×** a super-large one, so a rational seeder fills its
+    disk from the small end and the 2 TiB releases are left to whoever has
+    spare disk and no better use for it — which, with the $\pi_{{min}}$ cliff
+    above, is how a catalogue loses its large end first. At the top,
+    $\eta = 1.1$, the same ratios invert to **{_hi_large:.2f}×** and
+    **{_hi_super:.2f}×** and the tilt simply runs the other way. A ±0.1 move
+    in the exponent is therefore already a large transfer between size
+    classes; further out it stops being a parameter of this mechanism and
+    becomes a different pay-out policy.
+
+    There is a second, unmodelled tilt, and it points the way $\eta < 1$
+    points: acquiring a torrent to seed it costs
+    $\phi_i \cdot \text{{size}}_i$ points up front. That does not shift the
+    long-run exponent on its own — dividing both the reward and the
+    acquisition charge by size leaves the comparison intact once the torrent
+    is held forever — but it is a real *finite-horizon* barrier: the shorter
+    the expected holding time, the more of that one-off charge has to be
+    amortised, and the worse large torrents look. Turnover therefore biases
+    the effective break-even exponent upward, which is the reason the band is
+    offered above $1$ and not only below it.
     """)
     return
 

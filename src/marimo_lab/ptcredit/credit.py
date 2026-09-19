@@ -38,13 +38,17 @@ class RewardParams:
     ``importance_mode`` selects the open decision of §9: ``"pay"`` scales the
     reward by ``w_i = 2**z_i`` (the current design), ``"target"`` instead moves
     the per-torrent target to ``C* * 2**-z_i`` and pays every torrent alike.
+
+    ``eta`` defaults to ``1.0``, the size-neutral exponent derived in part 2:
+    only at ``eta = 1`` does a GiB of disk earn the same reward whatever the
+    torrent's size. Earlier drafts of §3.6 started it at ``0.7``.
     """
 
     kappa: float = 1.0
     alpha: float = 0.05
     gamma: float = 4.0
     c_star: float = 1.5
-    eta: float = 0.7
+    eta: float = 1.0
     pi_min: float = 0.9
     m: float = 24.0
     half_life_h: float = 14.0 * 24.0

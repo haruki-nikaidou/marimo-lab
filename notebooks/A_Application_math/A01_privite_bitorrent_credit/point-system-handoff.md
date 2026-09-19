@@ -68,7 +68,7 @@ $$
 S_i = \frac{\text{size}_i}{\bar S}
 $$
 
-$S_i^{\eta}$ scales reward with size so that disk spent on large and small torrents is compensated comparably. $\eta$ is a global exponent, slowly adjusted from the site-wide size distribution (see §9).
+$S_i^{\eta}$ scales reward with size so that disk spent on large and small torrents is compensated comparably. $\eta$ is a global exponent, initially $1$ — the size-neutral value derived in part 2 §4 — slowly adjusted from the site-wide size distribution (see §9) and clamped to $[0.9, 1.1]$, since outside that band the exponent stops being a size correction and becomes a subsidy to one end of the catalogue.
 
 ### 3.2 Node estimates
 
@@ -177,7 +177,7 @@ Because $x_i$ is a sum, $H_i - H_i^{(-u)}$ is two function evaluations on cached
 | $\alpha$ | floor reward for any seeder; "disk rent" | $\le 0.05$ (well below plateau $\approx 0.8$) | admin |
 | $\gamma$ | knee sharpness, i.e. controller gain | $4$ | admin, rarely |
 | $C^*$ | target slowdown | $1.5$ | admin |
-| $\eta$ | size exponent | $0.7$ | slow job, §9 |
+| $\eta$ | size exponent | $1$, clamped to $[0.9, 1.1]$ | slow job, §9 |
 | $\pi_{min}$ | minimum completeness probability | $0.9$ | admin |
 | $m$ | prior weight in pseudo-hours | $24$ | admin |
 | $\lambda$ | evidence half-life | $14$ days | admin |
@@ -195,7 +195,7 @@ $$
 $$
 
 > [!warning] Two slow controllers
-> $\kappa$ and $\eta$ are both adjusted from aggregate behaviour that they themselves influence. Keep both slow (days, not hours) and never let them move on the same day, or they can oscillate against each other.
+> $\kappa$ and $\eta$ are both adjusted from aggregate behaviour that they themselves influence. Keep both slow (days, not hours) and never let them move on the same day, or they can oscillate against each other. $\eta$'s clamp to $[0.9, 1.1]$ bounds how far that interaction can carry it.
 
 ---
 
@@ -304,7 +304,7 @@ All cases below are handled by the prior hierarchy in §3.2; none needs special-
 
 1. **Agent-based simulation before launch.** $N$ torrents with skewed popularity, $M$ seeders with disk budgets and heterogeneous bandwidth and uptime; each tick, every seeder drops its lowest-reward torrent if a higher-reward one is available. Track the distribution of $C_i$ over time while varying total disk supply. Acceptance: the $C_i$ distribution collapses toward $C^*$ regardless of disk supply, with no sustained oscillation at $\gamma = 4$. Use the same run to size $\alpha$, $\kappa$'s initial value and $I_{min}$.
 2. **Shadow mode for two to three weeks after launch.** Compute and display rewards in the UI but pay a flat rate. Watch node estimates settle and the mint/burn ratio stabilise before real points depend on the predictor.
-3. **Switch to live rewards** with the $\kappa$ controller enabled and $\eta$ frozen for the first month.
+3. **Switch to live rewards** with the $\kappa$ controller enabled and $\eta$ frozen at $1$ for the first month.
 4. **Instrumentation to keep permanently:** histogram of $C_i$, histogram of $\Delta H$ paid, mint/burn ratio, fraction of nodes still at prior weight, and per-torrent seeder-count time series for a sample of torrents (to detect hunting).
 
 ---
@@ -312,7 +312,7 @@ All cases below are handled by the prior hierarchy in §3.2; none needs special-
 ## 9. Open decisions
 
 > [!todo] Rule for $\eta$
-> $\eta$ is meant to make reward per GiB-hour of disk roughly size-neutral across the site's torrent size distribution. The concrete update rule (which statistic of the distribution, what step size) is not yet specified. Freeze $\eta$ at its initial value until the rule is written and simulated.
+> $\eta$ is meant to make reward per GiB-hour of disk roughly size-neutral across the site's torrent size distribution. Part 2 §4 shows that $\eta = 1$ is exactly size-neutral, so that is where it starts and any update rule may only move it inside $[0.9, 1.1]$ — part 3 measures a ±10 % tilt as a real loss of health at one end of the catalogue. The concrete update rule (which statistic of the distribution, what step size) is still not specified. Freeze $\eta$ at $1$ until the rule is written and simulated.
 
 > [!todo] Should importance move the target instead of the pay?
 > Currently $z_i$ scales the reward via $w_i$, which means high-importance torrents get provisioned past $C^*$ when disk is plentiful. The alternative is a per-torrent target $C_i^* = C^* \cdot 2^{-z_i}$, so importance demands better health rather than paying more for the same health. Both can coexist. Decide after simulation.
