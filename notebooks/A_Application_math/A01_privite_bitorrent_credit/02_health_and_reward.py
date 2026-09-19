@@ -16,6 +16,8 @@ def _():
         health_marginal,
         sample_catalog,
         sample_population,
+        slowdown,
+        slowdown_plain,
     )
 
     plt.rcParams.update(
@@ -30,6 +32,8 @@ def _():
         plt,
         sample_catalog,
         sample_population,
+        slowdown,
+        slowdown_plain,
     )
 
 
@@ -51,14 +55,16 @@ def _(mo):
     r_{u,i} = \kappa\, w_i\, S_i^{\eta}\,\bigl[\alpha + H_i - H_i^{(-u)}\bigr]
     $$
 
-    Four questions, in order:
+    Five questions, in order:
 
     1. is the reward really a stable controller, and where does its fixed point
        land;
     2. what happens at the availability threshold $\pi_{min}$;
-    3. what value of $\eta$ actually makes the reward size-neutral (§9's first
+    3. what the two clamps on $C_i$ are worth — the same system scored with
+       the raw ratio $C_i = d_{ref}/x_i$ instead;
+    4. what value of $\eta$ actually makes the reward size-neutral (§9's first
        open decision);
-    4. how big may $\alpha$ be, and how big must the startup gift $I_{min}$ be.
+    5. how big may $\alpha$ be, and how big must the startup gift $I_{min}$ be.
     """)
     return
 
@@ -356,7 +362,303 @@ def _(mo, np, par, ui_ptilde):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 3. What $\eta$ should be (§9, first open decision)
+    ## 3. The two clamps on $C_i$, priced
+
+    $C_i$ as written is not a ratio, it is a ratio with two clamps:
+
+    $$
+    C^{\text{cur}}_i = \begin{cases}\max(1,\, d_{ref}/x_i) & A_i \ge \pi_{min}\\
+    \infty & \text{else}\end{cases}
+    \qquad\text{vs.}\qquad
+    C^{\text{raw}}_i = \frac{d_{ref}}{x_i}
+    $$
+
+    The comparison below feeds **both rules the same swarm**: the identical
+    seeders of §2, each adding $g_v$ of credited capacity and $\tilde p_v$ of
+    completeness. Nothing else changes — same $H$, same $\alpha$, same
+    $\kappa w S^\eta$ — so every difference in the panels is the clamps and
+    only the clamps.
+
+    One thing both rules keep: $g_v = \tilde p_v \tilde b_v / k_v$ already
+    discounts a node's uplink by how often it is up, and $x_i$ is a sum of
+    those. Availability is therefore priced **linearly** under either rule.
+    What $\pi_{min}$ adds on top is the *complete-copy probability*
+    $A_i = 1 - \prod_v (1 - \tilde p_v)$ — a nonlinear, redundancy-sensitive
+    term that a sum of discounted rates cannot express: two nodes at
+    $\tilde p = 0.5$ contribute the same $x$ as one at $\tilde p = 1$, but
+    only $A = 0.75$ of a copy against $1.0$.
+
+    Note what $r_{u,i}$ is: a **rate**, points per hour, drawn by *every*
+    member for as long as it holds the torrent. So a state with $n$ identical
+    seeders is not a one-off payment of $\Delta H(n)$; it mints
+    $n\,[\alpha + \Delta H(n)]$ every hour it persists, where
+    $\Delta H(n) = H(n) - H(n-1)$ is each member's leave-one-out marginal.
+    Panel 3 is what one seeder draws, panel 4 what the site pays out while
+    parked there.
+    """)
+    return
+
+
+@app.cell
+def _(g_unit, health, np, par, slowdown, slowdown_plain, ui_ptilde, x_star):
+    cmp_n = np.arange(0, 41)
+    cmp_cap = cmp_n * g_unit
+    cmp_avail = 1.0 - (1.0 - float(ui_ptilde.value)) ** cmp_n
+    cmp_dref = x_star * par.c_star
+
+    cmp_c = {
+        "current": slowdown(cmp_cap, cmp_avail, cmp_dref, par.pi_min),
+        "raw": slowdown_plain(cmp_cap, cmp_dref),
+    }
+    cmp_h = {k: health(v, par.c_star, par.gamma) for k, v in cmp_c.items()}
+    # Leave-one-out marginal of an identical seeder in an n-seeder swarm, and
+    # the rate that seeder is paid.  r is points *per hour*, paid to every
+    # member for as long as the state lasts.
+    cmp_dh = {k: np.diff(v, prepend=0.0) for k, v in cmp_h.items()}
+    cmp_pay = {k: par.alpha + v for k, v in cmp_dh.items()}
+    # Site-wide mint rate while the swarm sits at n: every one of the n
+    # members draws its own rate, every hour.
+    cmp_mint = {k: cmp_n * v for k, v in cmp_pay.items()}
+    cmp_mint_h = {k: cmp_n * v for k, v in cmp_dh.items()}
+    cmp_style = {"current": ("k", "current $C_i$"), "raw": ("C1", r"raw $d_{ref}/x$")}
+    return (
+        cmp_avail,
+        cmp_c,
+        cmp_cap,
+        cmp_dref,
+        cmp_dh,
+        cmp_h,
+        cmp_mint,
+        cmp_mint_h,
+        cmp_n,
+        cmp_pay,
+        cmp_style,
+    )
+
+
+@app.cell
+def _(
+    cmp_c, cmp_h, cmp_mint, cmp_mint_h, cmp_n, cmp_pay, cmp_style, health, np, par, plt
+):
+    _fig, _ax = plt.subplots(1, 4, figsize=(14.0, 3.2))
+    for _k, (_col, _lab) in cmp_style.items():
+        _ax[0].plot(cmp_n, cmp_c[_k], "o-", color=_col, ms=2.5, lw=1.0, label=_lab)
+        _ax[1].plot(cmp_n, cmp_h[_k], "o-", color=_col, ms=2.5, lw=1.0, label=_lab)
+        _ax[2].plot(cmp_n, cmp_pay[_k], "o-", color=_col, ms=2.5, lw=1.0, label=_lab)
+        _ax[3].plot(cmp_n, cmp_mint[_k], "o-", color=_col, ms=2.5, lw=1.0, label=_lab)
+        _ax[3].plot(cmp_n, cmp_mint_h[_k], "--", color=_col, lw=1.0)
+
+    _ax[0].axhline(par.c_star, color="C3", ls="--", lw=0.9, label=r"$C^*$")
+    _ax[0].axhline(1.0, color="C7", ls=":", lw=0.9, label=r"$C=1$ clamp")
+    _finite = cmp_c["current"][np.isfinite(cmp_c["current"])]
+    _ax[0].set_ylim(0.5 * np.min(cmp_c["raw"][1:]), 2.0 * np.max(_finite))
+    _ax[0].set_yscale("log")
+    _ax[0].set_xlabel("seeders $n$")
+    _ax[0].set_ylabel(r"$C$")
+    _ax[0].set_title(r"slowdown ($\infty$ drops off the axis)")
+    _ax[0].legend(fontsize=6.5)
+
+    _ax[1].axhline(
+        float(health(par.c_star, par.c_star, par.gamma)),
+        color="C3",
+        ls="--",
+        lw=0.9,
+        label=r"$H(C^*)$",
+    )
+    _ax[1].set_xlabel("seeders $n$")
+    _ax[1].set_ylabel(r"$H$")
+    _ax[1].set_title("health of the same swarm")
+    _ax[1].legend(fontsize=6.5)
+
+    for _theta, _col in ((0.30, "C2"), (0.10, "C4")):
+        _ax[2].axhline(_theta, color=_col, lw=0.8, ls="--")
+        _ax[2].annotate(
+            rf"$\theta$={_theta}",
+            (cmp_n[-1], _theta),
+            fontsize=6.5,
+            color=_col,
+            ha="right",
+            va="bottom",
+        )
+    _ax[2].axhline(par.alpha, color="C7", ls=":", lw=0.9, label=r"$\alpha$ floor")
+    _ax[2].set_yscale("symlog", linthresh=0.01)
+    _ax[2].set_xlabel("seeders $n$")
+    _ax[2].set_ylabel(r"$\alpha + \Delta H$")
+    _ax[2].set_title("what the $n$-th seeder is paid")
+    _ax[2].legend(fontsize=6.5)
+
+    _ax[3].plot([], [], "k--", lw=1.0, label=r"health part only ($\alpha$ off)")
+    _ax[3].set_xlabel("seeders $n$")
+    _ax[3].set_ylabel(r"$n\,(\alpha + \Delta H)$")
+    _ax[3].set_title("site mint rate while parked at $n$")
+    _ax[3].legend(fontsize=6.5)
+    _fig.tight_layout()
+    _fig
+    return
+
+
+@app.cell
+def _(cmp_n, cmp_pay, mo, np):
+    def entry_equilibrium(rule, theta):
+        """Seeder counts that survive free entry at outside option ``theta``.
+
+        The payout curve is *not* monotone — under the current rule the
+        quorum-completing seeder is paid a spike — so two different things
+        deserve the name equilibrium:
+
+        ``grown``
+            sequential entry from an empty torrent. Entrant $k$ joins only if
+            payout($k$) >= theta, so the process halts at the first refusal
+            and never sees the spike behind it.
+        ``held``
+            the largest swarm that is stable once it exists: the last $n$
+            whose own payout still clears theta. Reaching it needs the first
+            ``n_alive`` seeders to move together.
+        """
+        _pay = cmp_pay[rule]
+        _refuse = np.flatnonzero((_pay < theta) & (cmp_n > 0))
+        grown = int(cmp_n[-1]) if _refuse.size == 0 else int(cmp_n[_refuse[0]] - 1)
+        _ok = np.flatnonzero((_pay >= theta) & (cmp_n > 0))
+        held = 0 if _ok.size == 0 else int(cmp_n[_ok[-1]])
+        capped = _refuse.size == 0
+        return grown, held, capped
+
+    cmp_thetas = (0.30, 0.15, 0.10, 0.06, 0.055, 0.04)
+    cmp_rows = []
+    for _theta in cmp_thetas:
+        _cells = []
+        for _rule in ("current", "raw"):
+            _grown, _held, _capped = entry_equilibrium(_rule, _theta)
+            _tag = f"{_grown}+" if _capped else f"{_grown}"
+            _cells += [_tag, f"{_held}" + ("+" if _capped else "")]
+        cmp_rows.append(f"| {_theta:.3f} | " + " | ".join(_cells) + " |")
+    mo.md(
+        "**Free entry at outside option $\\theta$ — seeders sustained**\n\n"
+        "`grown` = sequential entry from empty; `held` = largest swarm stable"
+        " once formed; `+` = still paying at $n = 40$, so disk binds first.\n\n"
+        r"| $\theta$ | current: grown | current: held | raw: grown |"
+        r" raw: held |" + "\n|---|---|---|---|---|\n" + "\n".join(cmp_rows)
+    )
+    return cmp_thetas, entry_equilibrium
+
+
+@app.cell(hide_code=True)
+def _(
+    cmp_avail,
+    cmp_c,
+    cmp_dh,
+    cmp_h,
+    cmp_mint,
+    cmp_mint_h,
+    cmp_n,
+    cmp_pay,
+    entry_equilibrium,
+    health,
+    mo,
+    np,
+    par,
+):
+    _first_ok = int(np.flatnonzero(np.isfinite(cmp_c["current"]))[0])
+    _clamped = int(np.flatnonzero(cmp_c["current"] <= 1.0)[0])
+    _same = np.isclose(cmp_pay["current"], cmp_pay["raw"]) & (cmp_n > 0)
+    _shared = np.flatnonzero(_same)
+    _headroom = 1.0 - float(health(1.0, par.c_star, par.gamma))
+    _grown_cur, _held_cur, _ = entry_equilibrium("current", 0.10)
+    _grown_raw, _held_raw, _ = entry_equilibrium("raw", 0.10)
+    _hi_cur, _hi_raw = (entry_equilibrium(_r, 0.15)[1] for _r in ("current", "raw"))
+    # First state where the clamp has fully bitten: the current rule's
+    # marginal is exactly zero, so only alpha is still being minted.
+    _flat = int(np.flatnonzero((cmp_dh["current"] == 0.0) & (cmp_n >= _clamped))[0])
+    _gap = float(cmp_mint["raw"][_flat] / max(cmp_mint["current"][_flat], 1e-12))
+    _mint_gap = f"{100 * (_gap - 1.0):.1f}%"
+    if _first_ok <= 1:
+        _quorum = rf"""**1. The quorum.** At
+    $\tilde p_v \ge \pi_{{min}}$ one seeder already clears the availability
+    condition, so the first entrant is paid the whole of $H$ under *both*
+    rules ({float(cmp_pay["current"][1]):.4f} vs
+    {float(cmp_pay["raw"][1]):.4f}) and the $\pi_{{min}}$ clamp is inert.
+    Drag $\tilde p_v$ below $\pi_{{min}} = {par.pi_min:.2f}$ to make this
+    region exist."""
+    else:
+        _quorum = rf"""**1. The quorum, $n < {_first_ok}$.** The current rule
+    pays the first entrant the bare floor $\alpha = {par.alpha:.2f}$ and the
+    ${_first_ok}$-th — who lifts $A$ to
+    ${cmp_avail[_first_ok]:.3f} \ge \pi_{{min}}$ — a spike of
+    ${float(cmp_pay["current"][_first_ok]):.4f}$. The raw rule sees no
+    quorum, so it pays the two nearly the same
+    (${float(cmp_pay["raw"][1]):.4f}$, ${float(cmp_pay["raw"][2]):.4f}$): the
+    lone seeder's rate is already discounted by $\tilde p_v$ inside $g_v$,
+    but nothing prices the fact that with one seeder a complete copy exists
+    only ${100 * cmp_avail[1]:.0f}\%$ of the time rather than
+    ${100 * cmp_avail[_first_ok]:.0f}\%$."""
+    mo.md(rf"""
+    **The two rules agree on almost the whole range.** Between
+    $n = {int(cmp_n[_shared[0]])}$ and $n = {int(cmp_n[_shared[-1]])}$ the
+    payouts are identical to floating point: above the quorum and below the
+    clamp, $C^{{\text{{cur}}}} = C^{{\text{{raw}}}}$ by definition. Everything
+    that follows lives in the two end regions.
+
+    {_quorum}
+
+    The table prices that flat spot. At $\theta = 0.10$ the current rule
+    **grows to {_grown_cur}** seeders from an empty torrent while the raw
+    rule grows to {_grown_raw}; both *hold* {_held_cur} once the swarm
+    exists. The $\pi_{{min}}$ cutoff barely touches the healthy steady state
+    — it decides whether that state is reachable without coordination. The
+    trade runs the other way further up: at $\theta = 0.15$ the current rule
+    holds {_hi_cur} against the raw rule's {_hi_raw}, because concentrating
+    the quorum's value into one payment is what makes that payment large
+    enough to clear a demanding outside option at all.
+
+    **2. The clamp, $n \ge {_clamped}$.** Here $x \ge d_{{ref}}$: a leecher
+    on a $d_{{ref}}$ link cannot download faster than $d_{{ref}}$, so the
+    current rule freezes $H$ at $H(1) = {1 - _headroom:.4f}$ and, from
+    $n = {_flat}$, pays exactly $\alpha$ and nothing else. The raw rule lets
+    $C$ fall below 1 and $H$ creep to
+    ${float(cmp_h["raw"][-1]):.4f}$ at $n = {int(cmp_n[-1])}$.
+
+    The cost of that is a **permanent** extra mint, not a one-off bonus:
+    every hour the swarm sits at $n = {_flat}$ the raw rule pays
+    ${float(cmp_mint_h["raw"][_flat]):.3f}$ points of health across the
+    membership where the current rule pays $0$, and it is still paying
+    ${float(cmp_mint_h["raw"][-1]):.3f}$/h at $n = {int(cmp_n[-1])}$ — for
+    capacity no single leecher can absorb, for as long as the swarm exists.
+    The per-seeder amounts are small
+    (${float(cmp_dh["raw"][_flat]):.4f}$/h against
+    $\alpha = {par.alpha:.2f}$), so here the $\alpha n$ term still dominates
+    the site's bill ({_mint_gap} more in total at
+    $n = {_flat}$). Two things make that comparison worse for the raw
+    rule: a smaller $\alpha$, which strips away the term that was masking it,
+    and a smaller $\gamma$, which fattens the tail the clamp was cutting off
+    ($H(1) = {1 - _headroom:.3f}$ here, $0.85$ at $\gamma = 2$, so the
+    unreachable headroom grows from {100 * _headroom:.1f}% to 15%). And the
+    marginal still buys seeders: at $\theta = 0.055$ the raw rule holds
+    {entry_equilibrium("raw", 0.055)[1]} against the current rule's
+    {entry_equilibrium("current", 0.055)[1]}.
+
+    **Verdict.** $\max(1, \cdot)$ is worth keeping and costs little: it
+    encodes a physical fact (a single leecher's downlink) and its removal
+    buys the site nothing it can deliver — though a swarm serving several
+    leechers at once *could* use that capacity, which is the one honest
+    argument for the raw form. $\pi_{{min}}$ is the load-bearing clamp, but
+    not because it is the only availability term: $g_v$ already carries a
+    linear $\tilde p_v$ discount, which survives in both rules. What the
+    cutoff adds is the *redundancy* premium — the difference between two
+    half-time seeders and one full-time one, which no sum of discounted
+    rates can express — and it adds it as a step, which is what creates the
+    trap. Keep the term, drop the step: paying
+    $\min(1, A_i/\pi_{{min}})\cdot H(C_i)$ prices the complete-copy
+    probability continuously, so the first seeder back is paid for the
+    availability it restores instead of waiting for a quorum to form around
+    it.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 4. What $\eta$ should be (§9, first open decision)
 
     $\eta$ is meant to make reward *per GiB-hour of disk* size-neutral. That
     condition can be written down rather than tuned. A seeder's binding
@@ -471,7 +773,7 @@ def _(cat, mo, np, par):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 4. Sizing $\alpha$, $\kappa$ and $I_{min}$
+    ## 5. Sizing $\alpha$, $\kappa$ and $I_{min}$
 
     $\alpha$ is paid on every membership regardless of health, so it is the
     dominant term in total mint whenever most torrents are healthy — exactly
@@ -560,7 +862,7 @@ def _(cat, mo, n_alive, np):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. Importance: pay more, or demand more? (§9, second open decision)
+    ## 6. Importance: pay more, or demand more? (§9, second open decision)
 
     $w_i = 2^{z_i}$ multiplies the pay; the alternative is a per-torrent target
     $C^*_i = C^* 2^{-z_i}$ that leaves pay alone. The difference is visible in

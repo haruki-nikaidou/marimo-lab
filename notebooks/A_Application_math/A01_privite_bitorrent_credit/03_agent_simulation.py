@@ -659,18 +659,18 @@ def _(mo):
 @app.cell
 def _(np, plt, runs):
     _r = runs[1.0]
-    _disk = _r.user_disk
+    _disk = _r.user_disk_budget
     _bal = _r.final_balance
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.2))
     _ax[0].scatter(_disk, np.maximum(_bal, 1e-1), s=5, alpha=0.35, lw=0)
     _ax[0].set_xscale("log")
     _ax[0].set_yscale("log")
-    _ax[0].set_xlabel("user disk (GiB)")
+    _ax[0].set_xlabel("user disk budget (GiB)")
     _ax[0].set_ylabel("final balance (points)")
     _rank = np.corrcoef(np.argsort(np.argsort(_disk)), np.argsort(np.argsort(_bal)))[
         0, 1
     ]
-    _ax[0].set_title(f"balance vs disk (Spearman {_rank:.2f})")
+    _ax[0].set_title(f"balance vs provisioned disk (Spearman {_rank:.2f})")
 
     _srt = np.sort(_bal)[::-1]
     _share = np.cumsum(_srt) / max(_srt.sum(), 1e-9)
@@ -703,7 +703,7 @@ def _(mo, np, runs, variant_runs):
     _pin = variant_runs["pinned uploader"]
     _scarce = runs[0.25].acceptance(days=7)
     _r1 = runs[1.0]
-    _bal, _disk = _r1.final_balance, _r1.user_disk
+    _bal, _disk = _r1.final_balance, _r1.user_disk_budget
     _rank = float(
         np.corrcoef(np.argsort(np.argsort(_disk)), np.argsort(np.argsort(_bal)))[0, 1]
     )
@@ -727,9 +727,12 @@ def _(mo, np, runs, variant_runs):
        disk the available-torrent median is still
        {_scarce["avail_median_C"]:.2f} while
        {_scarce["unavailable_fraction"]:.0%} of the catalogue has dropped
-       below $\pi_{{min}}$ — complete copies still exist, but not reliably
-       online ones. A dashboard watching only the $C_i$ histogram over
-       available torrents would show a perfectly healthy site.
+       below $\pi_{{min}}$. Note the metric does not separate the two ways
+       that happens — a torrent with no members at all, and one whose
+       complete seeders are individually too unreliable for
+       $1 - \prod_v (1 - \tilde p_v)$ to clear the threshold. Both read as
+       $C_i = \infty$. A dashboard watching only the $C_i$ histogram over
+       available torrents would show a perfectly healthy site either way.
 
     3. **$\pi_{{min}}$ is a cliff with no gradient below it.** When
        $A_i < \pi_{{min}}$ both $H_i$ and $H_i^{{(-u)}}$ are zero, so the
@@ -739,8 +742,10 @@ def _(mo, np, runs, variant_runs):
        modest — large-torrent unavailability
        {_unavail_large("baseline"):.0%} baseline vs
        {_unavail_large("pinned uploader"):.0%} with protected initial holders
-       (covering {_pin.pinned_coverage:.0%} of the catalogue) — but it is the
-       mechanism that makes the ×0.25 column irreversible. Recommend making
+       (covering {_pin.pinned_coverage:.0%} of the catalogue) — but it is
+       what leaves the ×0.25 column without a *directed* way back: recovery
+       depends on $\alpha$-driven random browsing rather than on any reward
+       gradient pointing at the torrents that need seeders. Recommend making
        completeness continuous, e.g. paying
        $\min(1, A_i/\pi_{{min}}) \cdot H(C_i)$.
 

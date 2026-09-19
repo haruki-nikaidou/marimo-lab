@@ -20,6 +20,7 @@ __all__ = [
     "health_marginal",
     "reward_rate",
     "slowdown",
+    "slowdown_plain",
     "softplus",
     "target_capacity",
 ]
@@ -76,12 +77,34 @@ def health(slowdown_c, c_star=1.5, gamma=4.0):
 
 
 def slowdown(capacity, completeness, d_ref, pi_min=0.9):
-    """``C_i``: predicted slowdown, ``inf`` when no complete copy is likely."""
+    """``C_i``: predicted slowdown, with both clamps of §3.2.
+
+    Two clamps sit on top of the raw ratio ``d_ref / x``:
+
+    * ``max(1, .)`` — a leecher can never beat their own downlink, so swarm
+      capacity above ``d_ref`` buys that leecher nothing;
+    * ``A_i < pi_min -> inf`` — capacity from nodes that are rarely online
+      simultaneously does not constitute a servable copy.
+
+    :func:`slowdown_plain` is the same quantity with neither clamp; part 2 of
+    the notebook series compares the two.
+    """
     capacity = np.asarray(capacity, dtype=float)
     completeness = np.asarray(completeness, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.where(capacity > 0.0, d_ref / np.maximum(capacity, 1e-300), np.inf)
     return np.where(completeness >= pi_min, np.maximum(1.0, ratio), np.inf)
+
+
+def slowdown_plain(capacity, d_ref):
+    """``C_i = d_ref / x_i``, unclamped — the comparison rule of part 2.
+
+    Availability does not enter, and values below 1 are allowed, so health
+    keeps rising with capacity a single leecher could never consume.
+    """
+    capacity = np.asarray(capacity, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(capacity > 0.0, d_ref / np.maximum(capacity, 1e-300), np.inf)
 
 
 def target_capacity(d_ref, c_star=1.5):

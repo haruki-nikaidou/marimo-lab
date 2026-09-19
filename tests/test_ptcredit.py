@@ -24,6 +24,7 @@ from marimo_lab.ptcredit import (
     sample_bandwidth,
     sample_catalog,
     slowdown,
+    slowdown_plain,
 )
 from marimo_lab.ptcredit.sim import _Site
 
@@ -63,11 +64,32 @@ def test_size_classes_respect_their_support_and_mix():
     assert shares == pytest.approx([0.30, 0.40, 0.30], abs=0.001)
 
 
-def test_normal_class_truncation_removes_the_negative_tail():
-    """N(12, 10) puts 11.5% of its mass below zero; none may survive."""
-    medium = DEFAULT_SIZE_CLASSES[1]
-    assert medium.retained_mass == pytest.approx(0.875, abs=0.01)
+def test_size_classes_read_the_second_parameter_as_a_variance():
+    """The brief states variances; scipy wants scales.
+
+    Reading `Lognormal(4.5, 3)` as sigma = 3 instead of sigma = sqrt(3)
+    rescales the large class by an order of magnitude at the tail and would
+    silently change every downstream result, so the semantics are pinned.
+    """
+    small, medium, large, _ = DEFAULT_SIZE_CLASSES
+    assert small.sd == pytest.approx(np.sqrt(0.5))
+    assert medium.sd == pytest.approx(np.sqrt(10.0))
+    assert large.sd == pytest.approx(np.sqrt(3.0))
+
+    # Untruncated shape, i.e. the stated law itself.
+    assert large.frozen().ppf(0.5) == pytest.approx(np.exp(4.5), rel=1e-9)
+    assert large.frozen().ppf(0.975) == pytest.approx(2683.0, rel=0.01)
+    assert medium.frozen().std() == pytest.approx(np.sqrt(10.0))
+
+    # With sigma = sqrt(10) the normal class barely reaches zero, so the
+    # truncation floor is a guard rather than a reshaping.
+    assert medium.frozen().cdf(0.0) < 1e-4
+    assert medium.retained_mass > 0.999
     assert medium.sample(50_000, np.random.default_rng(3)).min() > 0.0
+
+    # A sampled class must reproduce the stated log-scale spread.
+    drawn = np.log(small.sample(200_000, np.random.default_rng(11)))
+    assert drawn.std() == pytest.approx(np.sqrt(0.5), rel=0.02)
 
 
 def test_health_endpoints_and_target_value():
@@ -107,6 +129,30 @@ def test_completeness_cliff_leaves_no_marginal_below_pi_min():
     pair = 1.0 - (1.0 - p_tilde) ** 2
     assert pair >= pi_min
     assert float(health(slowdown(capacity, pair, 300.0, pi_min), 1.5, 4.0)) > 0.0
+
+
+def test_plain_slowdown_keeps_neither_clamp():
+    """The part-2 comparison rule must stay a bare ratio.
+
+    Both clamps re-added here would silently turn the comparison into a
+    comparison of the rule with itself.
+    """
+    d_ref = 300.0
+    # No availability argument at all, and no floor at C = 1.
+    assert float(slowdown_plain(600.0, d_ref)) == pytest.approx(0.5)
+    assert float(slowdown_plain(150.0, d_ref)) == pytest.approx(2.0)
+    assert not np.isfinite(float(slowdown_plain(0.0, d_ref)))
+
+    # Above the clamp the two rules must disagree, below it agree exactly.
+    over, under = 600.0, 150.0
+    assert float(slowdown(over, 1.0, d_ref)) == 1.0
+    assert float(slowdown_plain(over, d_ref)) < 1.0
+    assert float(slowdown(under, 1.0, d_ref)) == float(slowdown_plain(under, d_ref))
+
+    # And health keeps rising past the clamp only for the plain rule.
+    assert float(health(slowdown_plain(over, d_ref))) > float(
+        health(slowdown(over, 1.0, d_ref))
+    )
 
 
 def test_estimator_is_pessimistic_before_evidence_and_converges_after():
@@ -160,6 +206,28 @@ def test_simulation_never_overdraws_disk_or_balance():
     assert result.members_total[-1] > 0
     # Balances are non-negative by §3.5 and disk is a hard budget.
     assert result.balance_quantiles.min() >= 0.0
+
+
+def test_tail_window_covers_exactly_the_requested_days():
+    """Timestamps mark interval *ends*, so the boundary sample is excluded.
+
+    A left-inclusive search would take 29 six-hour records for a 7-day tail
+    and then divide interval totals by 7 days, inflating every per-day rate
+    by one interval's worth.
+    """
+    params = SimParams(days=10, n_torrents=200, n_users=40, record_every_h=6, seed=9)
+    result = run(params, RewardParams(kappa=0.05))
+
+    window = result.hours[result.tail(7.0)]
+    assert window.size == 28
+    assert result.tail_hours(7.0) == pytest.approx(168.0)
+    assert window[-1] == pytest.approx(result.hours[-1])
+    assert window[0] > result.hours[-1] - 7.0 * 24.0
+
+    # broke_per_day must be a true rate over that window.
+    acc = result.acceptance(days=7.0)
+    expected = result.refused[result.tail(7.0)].sum() / 7.0
+    assert acc["broke_per_day"] == pytest.approx(expected)
 
 
 def test_simulation_respects_every_node_s_disk_budget():

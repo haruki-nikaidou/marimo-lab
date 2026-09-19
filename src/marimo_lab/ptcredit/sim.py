@@ -112,15 +112,27 @@ class SimResult:
     final_members: np.ndarray = field(repr=False)
     final_contribution: np.ndarray = field(repr=False)
     final_balance: np.ndarray = field(repr=False)
-    #: Disk held by each *user* (summed over their nodes), for attributing
-    #: where the point supply accumulates.
-    user_disk: np.ndarray = field(repr=False)
+    #: Total disk *budget* provisioned by each user (summed over their nodes).
+    #: This is capacity owned, not bytes currently held.
+    user_disk_budget: np.ndarray = field(repr=False)
+    #: Hours represented by one recorded sample.
+    record_every_h: int = 6
     pinned_coverage: float = 0.0
 
     def tail(self, days: float = 7.0) -> slice:
-        """Index slice covering the last ``days`` of the run."""
+        """Index slice covering the last ``days`` of the run.
+
+        Timestamps mark interval *ends*, so the sample stamped exactly at the
+        cutoff represents the interval *before* the window and is excluded;
+        ``side="right"`` is what makes a 7-day tail 28 six-hour records rather
+        than 29.
+        """
         cut = self.hours[-1] - days * 24.0
-        return slice(int(np.searchsorted(self.hours, cut)), None)
+        return slice(int(np.searchsorted(self.hours, cut, side="right")), None)
+
+    def tail_hours(self, days: float = 7.0) -> float:
+        """Hours actually represented by :meth:`tail`, for rate conversions."""
+        return float(self.hours[self.tail(days)].size * self.record_every_h)
 
     def oscillation(self, days: float = 14.0) -> float:
         """Relative amplitude of the cross-torrent mean seeder count.
@@ -149,6 +161,7 @@ class SimResult:
         sl = self.tail(days)
         median_c = self.c_quantiles_all[sl, 1]
         finite_median = median_c[np.isfinite(median_c)]
+        span_days = max(self.tail_hours(days) / 24.0, 1e-9)
         return {
             "median_C_all": float(np.mean(median_c)),
             "p90_C_all": float(np.mean(self.c_quantiles_all[sl, 2])),
@@ -163,7 +176,9 @@ class SimResult:
             "unavailable_fraction": float(np.mean(self.unavailable_fraction[sl])),
             "mint_burn": float(self.mint[sl].sum() / max(self.burn[sl].sum(), 1e-9)),
             "kappa": float(self.kappa[-1]),
-            "broke_per_day": float(self.refused[sl].sum() / max(days, 1e-9)),
+            # refused is an interval total, so divide by the hours the tail
+            # actually represents rather than assuming one sample per hour.
+            "broke_per_day": float(self.refused[sl].sum() / span_days),
         }
 
 
@@ -839,6 +854,7 @@ def run(
         final_members=np.bincount(site.mem_torrent, minlength=site.n_t),
         final_contribution=g,
         final_balance=site.balance.copy(),
-        user_disk=np.bincount(site.user, site.disk, minlength=site.n_u),
+        user_disk_budget=np.bincount(site.user, site.disk, minlength=site.n_u),
+        record_every_h=params.record_every_h,
         pinned_coverage=site.pinned_coverage,
     )

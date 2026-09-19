@@ -31,12 +31,12 @@ def _(mo):
     support (truncation is by inverse CDF, i.e. the *conditional* law — no atom
     is piled on the bounds):
 
-    | class | law | support (GiB) |
-    |---|---|---|
-    | small | $\mathrm{Lognormal}(0,\,0.5)$ | $[0.05,\,20]$ |
-    | medium | $\mathcal{N}(12,\,10)$ | $[0.5,\,64]$ |
-    | large | $\mathrm{Lognormal}(4.5,\,3)$ | $[20,\,512]$ |
-    | super-large | log-uniform | $[512,\,2048]$ |
+    | class | law | $\sigma$ | support (GiB) |
+    |---|---|---|---|
+    | small | $\mathrm{Lognormal}(0,\,\sigma^2{=}0.5)$ | $0.707$ | $[0.05,\,20]$ |
+    | medium | $\mathcal{N}(12,\,\sigma^2{=}10)$ | $3.162$ | $[0.5,\,64]$ |
+    | large | $\mathrm{Lognormal}(4.5,\,\sigma^2{=}3)$ | $1.732$ | $[20,\,512]$ |
+    | super-large | log-uniform | — | $[512,\,2048]$ |
 
     counts split 30 % / 40 % / 30 % over the first three, with exactly three
     super-large torrents.
@@ -44,19 +44,26 @@ def _(mo):
     **Node bandwidth**, a 2-D truncated lognormal: median 300 Mbps down and
     50 Mbps up, capped at 10 Gbps down and 2 Gbps up.
 
-    Two details matter and are handled rather than assumed away.
+    Three details matter and are handled rather than assumed away.
 
-    1. The stated medians are medians **of the truncated law**. With a
-       correlated pair truncated to a rectangle the marginal of one coordinate
-       is *not* a 1-D truncated normal, so the two log-means are solved jointly
-       against rectangle probabilities of the standard bivariate normal
-       (`calibrate_bandwidth`), so the *calibrated law* has exactly the
-       stated medians — the CDF residual is driven below 1e-6 — and a finite
-       sample then reproduces them up to ordinary sampling error.
-    2. `Normal(12, 10)` puts 11.5 % of its mass below zero and
-       `Lognormal(4.5, 3)` puts most of its mass outside any sane "large
-       torrent" range. The truncation is therefore doing real work, and the
-       panel below reports exactly how much of each stated law survives it.
+    1. **The second size parameter is a variance, not a standard deviation.**
+       scipy wants a scale, so `SizeClass` stores `variance` and takes the
+       square root itself. The distinction is not cosmetic: read as a standard
+       deviation, `Lognormal(4.5, 3)` would put its 97.5th percentile at
+       32 TiB instead of 2.7 TiB, and `Normal(12, 10)` would put 11.5 % of the
+       medium class below zero GiB instead of 0.007 %.
+    2. The stated bandwidth medians are medians **of the truncated law**. With
+       a correlated pair truncated to a rectangle the marginal of one
+       coordinate is *not* a 1-D truncated normal, so the two log-means are
+       solved jointly against rectangle probabilities of the standard
+       bivariate normal (`calibrate_bandwidth`); the *calibrated law* has
+       exactly the stated medians — CDF residual below 1e-6 — and a finite
+       sample reproduces them up to ordinary sampling error.
+    3. Truncation still does real work on the **large** class: with
+       $\sigma = 1.732$ its untruncated 97.5th percentile is about 2.7 TiB,
+       which would overlap and overshoot the super-large class, so it is
+       capped at 512 GiB where super-large begins. The panel below reports
+       what fraction of each stated law survives its support.
 
     Everything else here — uptime, disk, popularity, importance, charge
     multiplier — is *not* specified by the handoff and is a modelling choice,
@@ -155,13 +162,14 @@ def _(W, catalog, mo, np):
     for _j, _cls in enumerate(W.DEFAULT_SIZE_CLASSES):
         _s = catalog.size_gib[catalog.class_idx == _j]
         _rows.append(
-            f"| {_cls.name} | {_cls.family} | {_s.size:,} | "
+            f"| {_cls.name} | {_cls.family} | {_cls.sd:.3f} | {_s.size:,} | "
             f"{_s.min():.2f} | {np.median(_s):.2f} | {_s.max():,.0f} | "
-            f"{_s.sum() / 1024:,.1f} | {_cls.retained_mass:.3f} |"
+            f"{_s.sum() / 1024:,.1f} | {_cls.retained_mass:.4f} |"
         )
     mo.md(
-        "| class | law | count | min | median | max | total TiB | retained |\n"
-        "|---|---|---:|---:|---:|---:|---:|---:|\n" + "\n".join(_rows)
+        "| class | law | σ | count | min | median | max | total TiB |"
+        " retained |\n"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|\n" + "\n".join(_rows)
     )
     return
 

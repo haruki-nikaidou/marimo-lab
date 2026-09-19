@@ -20,6 +20,7 @@ from .credit import (
     health_marginal,
     reward_rate,
     slowdown,
+    slowdown_plain,
     softplus,
     target_capacity,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "sample_catalog",
     "sample_population",
     "slowdown",
+    "slowdown_plain",
     "softplus",
     "target_capacity",
 ]

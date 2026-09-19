@@ -70,25 +70,39 @@ def hours_to_transfer(size_gib, rate_mbps):
 class SizeClass:
     """One component of the size mixture, truncated to ``[lo, hi]`` GiB.
 
-    ``family`` is ``"lognormal"`` (``p1`` = mean of the log, ``p2`` = sd of the
-    log), ``"normal"`` (``p1`` = mean, ``p2`` = sd) or ``"loguniform"``
-    (``p1``/``p2`` unused).  Truncation is by inverse CDF, i.e. the *conditional*
-    law on ``[lo, hi]`` — no atom is piled up on the bounds.
+    The second parameter is a **variance**, matching the brief's
+    ``Lognormal(4.5, 3)`` / ``Normal(12, 10)`` notation; scipy wants a scale,
+    so the square root is taken here rather than at every call site.  Getting
+    this wrong silently rescales the whole catalogue, so the two are named
+    apart:
+
+    * ``"lognormal"`` — ``location`` is the mean of the log, ``variance`` the
+      variance of the log;
+    * ``"normal"`` — ``location`` and ``variance`` on the linear scale;
+    * ``"loguniform"`` — both unused, the support is the distribution.
+
+    Truncation is by inverse CDF, i.e. the *conditional* law on ``[lo, hi]``;
+    no atom is piled up on the bounds.
     """
 
     name: str
     family: str
-    p1: float
-    p2: float
+    location: float
+    variance: float
     lo: float
     hi: float
+
+    @property
+    def sd(self) -> float:
+        """Standard deviation, on whichever scale the family lives."""
+        return float(np.sqrt(self.variance))
 
     def frozen(self):
         """The untruncated scipy distribution behind this class."""
         if self.family == "lognormal":
-            return lognorm(s=self.p2, scale=float(np.exp(self.p1)))
+            return lognorm(s=self.sd, scale=float(np.exp(self.location)))
         if self.family == "normal":
-            return norm(loc=self.p1, scale=self.p2)
+            return norm(loc=self.location, scale=self.sd)
         if self.family == "loguniform":
             return None
         raise ValueError(f"unknown size family: {self.family!r}")
@@ -118,8 +132,9 @@ class SizeClass:
         return self.ppf(rng.random(int(n)))
 
 
-#: small / medium / large / super-large.  The large class caps where the
-#: super-large class starts, so the two do not overlap.
+#: small / medium / large / super-large, with the brief's variances.  The
+#: large class caps where the super-large class starts, so the two do not
+#: overlap.
 DEFAULT_SIZE_CLASSES: tuple[SizeClass, ...] = (
     SizeClass("small", "lognormal", 0.0, 0.5, 0.05, 20.0),
     SizeClass("medium", "normal", 12.0, 10.0, 0.5, 64.0),
