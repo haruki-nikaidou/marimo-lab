@@ -40,6 +40,14 @@ from .world import (
 __all__ = ["SimParams", "SimResult", "build_world", "run"]
 
 
+def _weighted_quantile(values, weights, qs) -> list[float]:
+    """Lower order statistics of ``values`` under ``weights``."""
+    order = np.argsort(values, kind="stable")
+    cumulative = np.cumsum(weights[order])
+    picks = np.searchsorted(cumulative, np.asarray(qs) * cumulative[-1], side="left")
+    return [float(values[order][min(int(k), order.size - 1)]) for k in picks]
+
+
 @dataclass(frozen=True)
 class SimParams:
     """Everything about the run that is not a reward-formula parameter."""
@@ -123,6 +131,38 @@ class SimResult:
     #: capacity beyond one reference downlink is reaching anybody.
     served_share: np.ndarray
     multi_leech_share: np.ndarray
+    #: (T, 3) p10 / p50 / p90, over the *demand* downloads completed in the
+    #: recording interval, of time taken relative to time at the reference
+    #: rate: ``hours to complete / (size / min(down, d_ref))``.  This is the
+    #: experienced counterpart of ``C_i`` — one number per download, no
+    #: estimator and no scoring rule in it — so it reads the same under
+    #: every rule.  Seeders' own re-planning acquisitions are excluded.
+    download_slowdown_quantiles: np.ndarray
+    #: (T, 3) the same ratio with each download weighted by its size, i.e.
+    #: the slowdown per GiB downloaded.  Small files dominate the count and
+    #: large ones the bytes; a rule can only be judged on both.
+    download_slowdown_by_bytes: np.ndarray
+    #: Demand downloads outstanding for more than 24 h at the record time.
+    #: A download parked on a torrent whose only holder is rarely online
+    #: waits for weeks — this engine has no giving up — and it belongs in a
+    #: count of its own rather than in the completion-time quantiles.
+    demand_backlog: np.ndarray
+    #: Demand downloads accepted per recording interval, so the backlog can
+    #: be read against what the site is asked for.
+    demand_started: np.ndarray
+    #: Demand requests per recording interval for a torrent no complete copy
+    #: of exists.  They never become downloads, so the completion-time
+    #: quantiles cannot see them; this is the survivorship denominator.
+    demand_unsourced: np.ndarray
+    #: Share of leecher-hours that are seeders' re-planning acquisitions
+    #: rather than demand.  Those transfers draw on the same uplinks as
+    #: demand does, so a rule that churns the library is also a rule that
+    #: spends swarm capacity on moving copies around.
+    invest_leech_share: np.ndarray
+    #: Mean of the estimator's concurrency ``k_tilde`` over nodes — how many
+    #: of a seeder's torrents have a leecher at once, which divides its
+    #: credited contribution ``g_v`` and therefore every ``x_i`` it is in.
+    concurrency_mean: np.ndarray
     #: Memberships released / acquired by re-planning, per recording interval.
     #: A holding whose marginal has collapsed is worth only ``alpha`` per GiB,
     #: so churn is how the mechanism recycles disk toward torrents that still
@@ -209,6 +249,26 @@ class SimResult:
             "avail_p90_C_phys": float(np.mean(self.c_physical_avail[sl, 2])),
             "served_share": float(np.nanmean(self.served_share[sl])),
             "multi_leech_share": float(np.nanmean(self.multi_leech_share[sl])),
+            "download_p50": float(np.nanmean(self.download_slowdown_quantiles[sl, 1])),
+            "download_p90": float(np.nanmean(self.download_slowdown_quantiles[sl, 2])),
+            "bytes_p50": float(np.nanmean(self.download_slowdown_by_bytes[sl, 1])),
+            "bytes_p90": float(np.nanmean(self.download_slowdown_by_bytes[sl, 2])),
+            "demand_backlog": float(np.mean(self.demand_backlog[sl])),
+            # Backlog in units of one day's accepted demand.
+            "demand_backlog_days": float(
+                np.mean(self.demand_backlog[sl])
+                / max(self.demand_started[sl].sum() / span_days, 1e-9)
+            ),
+            # Share of demand that asked for a torrent no copy of exists.
+            "demand_unsourced_share": float(
+                self.demand_unsourced[sl].sum()
+                / max(
+                    self.demand_unsourced[sl].sum() + self.demand_started[sl].sum(),
+                    1e-9,
+                )
+            ),
+            "invest_leech_share": float(np.nanmean(self.invest_leech_share[sl])),
+            "concurrency_mean": float(np.mean(self.concurrency_mean[sl])),
             # ptp over a series that may contain inf is nan; report the swing
             # of the finite part and let oscillation() carry the real signal.
             "swing_C": float(np.ptp(finite_median))
@@ -302,6 +362,14 @@ class _Site:
         self.lch_torrent = np.empty(0, dtype=np.int64)
         self.lch_left = np.empty(0)
         self.lch_invest = np.empty(0, dtype=bool)
+        self.lch_time = np.empty(0)
+        #: Completion-time ratios and sizes of demand downloads finished
+        #: since the recorder last drained them.
+        self.finished: list[np.ndarray] = []
+        self.finished_size: list[np.ndarray] = []
+        #: Demand requests refused because no copy exists, since the
+        #: recorder last drained the counter.
+        self.demand_unsourced = 0
 
         self.pin_node = np.full(self.n_t, -1, dtype=np.int64)
         self.pinned_coverage = 0.0
@@ -427,7 +495,18 @@ class _Site:
     # -- per-hour physics --------------------------------------------------
 
     def _serve(self):
-        """One hour of actual transfers; returns per-node observed rates."""
+        """One hour of actual transfers; returns per-node observed rates.
+
+        Each leecher is served at ``min(own downlink, equal share of the
+        swarm's online uplink)``.  The estimator observes that rate — what a
+        10-minute announce delta would show while the transfer is running —
+        and so does ``served_share``; the mechanism is untouched by the rest
+        of this method.  Bytes moved are capped by what the download had
+        left, and the fraction of the hour a leecher was actually
+        transferring is its weight in every leecher-side statistic, so a file
+        that finishes in five minutes is not a full hour of experience.
+        Uplink freed by an early finisher is not re-split within the hour.
+        """
         online = self.rng.random(self.n_n) < self.avail
         leech_count = np.bincount(self.lch_torrent, minlength=self.n_t)
 
@@ -442,11 +521,18 @@ class _Site:
         capacity_true = np.bincount(self.mem_torrent, offer, minlength=self.n_t)
 
         rate = np.zeros(self.lch_node.size)
+        moved = np.zeros(self.lch_node.size)
+        weight = np.zeros(self.lch_node.size)
         if rate.size:
             lt = self.lch_torrent
             share = capacity_true[lt] / np.maximum(leech_count[lt], 1)
             rate = np.minimum(self.down[self.lch_node], share)
-            self.lch_left -= rate * 3600.0 / MEGABIT_PER_GIB
+            possible = rate * 3600.0 / MEGABIT_PER_GIB
+            moved = np.minimum(possible, self.lch_left)
+            weight = np.divide(
+                moved, possible, out=np.zeros_like(moved), where=possible > 0.0
+            )
+            self.lch_left -= moved
 
         served = np.bincount(self.lch_torrent, rate, minlength=self.n_t)
         frac = np.where(
@@ -455,20 +541,29 @@ class _Site:
         node_rate = np.bincount(
             self.mem_node, offer * frac[self.mem_torrent], minlength=self.n_n
         )
-        # Demand-side telemetry.  Swarm capacity above one leecher's downlink
-        # is only wasted if the swarm is not serving several leechers at
-        # once, so whether over-provisioning is waste has to be measured,
-        # not assumed: ``served_share`` is the fraction of the offered
-        # capacity actually drawn on torrents that had a leecher this hour,
-        # and ``multi_leech_share`` the fraction of leecher-hours spent on a
-        # swarm with at least two concurrent leechers.
+        # Demand-side telemetry.  ``served_share`` is the share of the
+        # *instantaneous* offered rate that leechers could draw on torrents
+        # with a leecher this hour — an average utilisation of allocated
+        # rate, not bytes over the hour; it says how often a leecher's own
+        # line rather than the swarm is the binding constraint, and nothing
+        # about whether slack matters in the tail.  ``multi_leech_share`` is
+        # the fraction of leecher time spent on a swarm with at least two
+        # concurrent leechers.
         busy = leech_count > 0
         offered = float(capacity_true[busy].sum())
         self.served_share = float(served.sum() / offered) if offered > 0.0 else np.nan
+        # Elapsed time per download: a transferring hour counts the fraction
+        # actually used, a stalled hour (no seeder online) counts in full.
+        elapsed = np.where(rate > 0.0, weight, 1.0)
+        self.lch_time += elapsed
+        total = float(elapsed.sum())
         self.multi_leech_share = (
-            float(np.mean(leech_count[self.lch_torrent] >= 2))
-            if self.lch_torrent.size
+            float((elapsed * (leech_count[self.lch_torrent] >= 2)).sum() / total)
+            if total > 0.0
             else np.nan
+        )
+        self.invest_leech_share = (
+            float((elapsed * self.lch_invest).sum() / total) if total > 0.0 else np.nan
         )
         self.est.observe(self.all_active, online, busy_nodes > 0, node_rate, busy_nodes)
         return online
@@ -547,17 +642,30 @@ class _Site:
         sizes the startup gift and tells whether the economy is too tight.
 
         Eligibility is resolved in a fixed order so the counters mean what
-        they say: structural rejections (already held, already downloading,
-        duplicate in this batch) are removed *first*, then the per-node disk
-        prefix, and only the survivors are tested against the per-user balance
-        prefix.  Running the prefixes over rejected rows would let a request
-        that was never going to happen make a later valid one look
-        unaffordable, inflating ``broke``.
+        they say: structural rejections (no complete copy anywhere, already
+        held, already downloading, duplicate in this batch) are removed
+        *first*, then the per-node disk prefix, and only the survivors are
+        tested against the per-user balance prefix.  Running the prefixes over
+        rejected rows would let a request that was never going to happen make
+        a later valid one look unaffordable, inflating ``broke``.
+
+        Every member holds a complete copy, so a torrent with no member has no
+        copy anywhere and a download of it could never progress; it would
+        still have burned the points and reserved the disk.  Such requests are
+        refused here, for demand and re-planning alike, and never counted as
+        ``broke``.
         """
         if nodes.size == 0:
             return 0, 0.0, 0
         size = self.size[torrents]
-        structural = ~self.holds[nodes, torrents] & ~self.fetching[nodes, torrents]
+        sourced = np.bincount(self.mem_torrent, minlength=self.n_t) > 0
+        if not invest:
+            self.demand_unsourced += int((~sourced[torrents]).sum())
+        structural = (
+            sourced[torrents]
+            & ~self.holds[nodes, torrents]
+            & ~self.fetching[nodes, torrents]
+        )
         if structural.any():
             # Drop duplicate (node, torrent) rows within the batch too.
             keys = nodes.astype(np.int64) * self.n_t + torrents
@@ -593,6 +701,7 @@ class _Site:
         self.lch_torrent = np.concatenate([self.lch_torrent, torrents])
         self.lch_left = np.concatenate([self.lch_left, self.size[torrents]])
         self.lch_invest = np.concatenate([self.lch_invest, np.full(nodes.size, invest)])
+        self.lch_time = np.concatenate([self.lch_time, np.zeros(nodes.size)])
         return nodes.size, float(cost.sum()), refused
 
     def _finish_downloads(self) -> bool:
@@ -608,11 +717,22 @@ class _Site:
             nodes[~keep], self.size[torrents[~keep]], minlength=self.n_n
         )
         self._add_members(nodes[keep], torrents[keep])
+        demand = done & ~self.lch_invest
+        if demand.any():
+            ideal_h = (
+                self.size[self.lch_torrent[demand]]
+                * MEGABIT_PER_GIB
+                / 3600.0
+                / np.minimum(self.down[self.lch_node[demand]], self.d_ref)
+            )
+            self.finished.append(self.lch_time[demand] / ideal_h)
+            self.finished_size.append(self.size[self.lch_torrent[demand]])
         alive = ~done
         self.lch_node = self.lch_node[alive]
         self.lch_torrent = self.lch_torrent[alive]
         self.lch_left = self.lch_left[alive]
         self.lch_invest = self.lch_invest[alive]
+        self.lch_time = self.lch_time[alive]
         return True
 
     def _candidate_probabilities(self) -> np.ndarray:
@@ -655,10 +775,16 @@ class _Site:
             / self.pair_count[self.pair_inv]
             / self.size[self.mem_torrent]
         )
-        # A pinned uploader never becomes the "worst holding".
-        per_member = np.where(
-            self.pin_node[self.mem_torrent] == self.mem_node, np.inf, per_member
+        # A pinned uploader never becomes the "worst holding", and neither
+        # does the only copy of a torrent somebody is downloading: an
+        # accepted download keeps a source until it completes.  Without
+        # this a swap can strand a leecher on a torrent no copy of exists.
+        members = np.bincount(self.mem_torrent, minlength=self.n_t)
+        leeching = np.bincount(self.lch_torrent, minlength=self.n_t) > 0
+        held_fast = (self.pin_node[self.mem_torrent] == self.mem_node) | (
+            (members[self.mem_torrent] == 1) & leeching[self.mem_torrent]
         )
+        per_member = np.where(held_fast, np.inf, per_member)
         picked = np.zeros(self.n_n, dtype=bool)
         picked[chosen] = True
         rows = np.flatnonzero(picked[self.mem_node])
@@ -707,8 +833,11 @@ class _Site:
             * (self.r.alpha + gain)
             / size_c
         )
+        # A torrent nobody holds cannot be acquired, whatever it would pay.
+        sourced = np.bincount(self.mem_torrent, minlength=self.n_t) > 0
         usable = (
-            (self.charge[cand] * size_c <= self.balance[self.user[chosen]][:, None])
+            sourced[cand]
+            & (self.charge[cand] * size_c <= self.balance[self.user[chosen]][:, None])
             & ~self.holds[chosen[:, None], cand]
             & ~self.fetching[chosen[:, None], cand]
             & (size_c <= self.disk[chosen][:, None])
@@ -739,6 +868,27 @@ class _Site:
             take_cand[j] = add | swap
             take_drop[j] = swap
 
+        # The per-holding guard above sees the membership count *before* the
+        # batch; several deciding nodes can each release one copy of the same
+        # torrent in one tick.  Cancel the surplus swaps so every torrent
+        # being downloaded keeps at least one member.
+        if take_drop.any():
+            drop_torrent = self.mem_torrent[hold_row[take_drop]]
+            order = np.argsort(drop_torrent, kind="stable")
+            sorted_t = drop_torrent[order]
+            fresh = np.ones(order.size, dtype=bool)
+            fresh[1:] = sorted_t[1:] != sorted_t[:-1]
+            starts = np.flatnonzero(fresh)
+            rank = np.arange(order.size) - np.repeat(
+                starts, np.diff(np.append(starts, order.size))
+            )
+            allowed = np.where(leeching[sorted_t], members[sorted_t] - 1, order.size)
+            cancel = np.zeros(order.size, dtype=bool)
+            cancel[order] = rank >= allowed
+            if cancel.any():
+                j_c, k_c = np.argwhere(take_drop)[cancel].T
+                take_drop[j_c, k_c] = False
+                take_cand[j_c, k_c] = False
         drops = int(take_drop.sum())
         if drops:
             drop = np.zeros(self.mem_node.size, dtype=bool)
@@ -780,6 +930,8 @@ def run(
     joins_h = np.zeros(total_h)
     served_share_h = np.full(total_h, np.nan)
     multi_leech_h = np.full(total_h, np.nan)
+    invest_leech_h = np.full(total_h, np.nan)
+    demand_started_h = np.zeros(total_h)
     tracked = np.argsort(-catalog.demand_share)[: params.n_tracked]
     starts_per_hour = params.starts_per_user_day * params.n_users / 24.0
     n_classes = len(catalog.class_names)
@@ -803,6 +955,13 @@ def run(
             "joins",
             "servedshare",
             "multileech",
+            "downloadq",
+            "downloadqb",
+            "backlog",
+            "demandstarted",
+            "demandunsourced",
+            "investleech",
+            "conc",
             "burn",
             "kappa",
             "members",
@@ -821,6 +980,7 @@ def run(
         online = site._serve()
         served_share_h[hour] = site.served_share
         multi_leech_h[hour] = site.multi_leech_share
+        invest_leech_h[hour] = site.invest_leech_share
 
         p_tilde, _, g = site.est.contribution()
         capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
@@ -851,7 +1011,8 @@ def run(
         n_start = site.rng.poisson(starts_per_hour)
         nodes = site.rng.integers(0, site.n_n, size=n_start)
         torrents = site.rng.choice(site.n_t, size=n_start, p=site.demand)
-        _, burned, refused = site._start_downloads(nodes, torrents, False)
+        started, burned, refused = site._start_downloads(nodes, torrents, False)
+        demand_started_h[hour] = started
         burn_h[hour] = burned
         refused_h[hour] = refused
 
@@ -940,6 +1101,32 @@ def run(
             rec["joins"].append(float(joins_h[span].sum()))
             rec["servedshare"].append(float(np.nanmean(served_share_h[span])))
             rec["multileech"].append(float(np.nanmean(multi_leech_h[span])))
+            finished = np.concatenate(site.finished) if site.finished else np.empty(0)
+            finished_size = (
+                np.concatenate(site.finished_size)
+                if site.finished_size
+                else np.empty(0)
+            )
+            site.finished.clear()
+            site.finished_size.clear()
+            rec["downloadq"].append(
+                np.quantile(finished, [0.1, 0.5, 0.9], method="lower")
+                if finished.size
+                else [np.nan] * 3
+            )
+            rec["downloadqb"].append(
+                _weighted_quantile(finished, finished_size, (0.1, 0.5, 0.9))
+                if finished.size
+                else [np.nan] * 3
+            )
+            rec["backlog"].append(
+                float((~site.lch_invest & (site.lch_time > 24.0)).sum())
+            )
+            rec["demandstarted"].append(float(demand_started_h[span].sum()))
+            rec["demandunsourced"].append(float(site.demand_unsourced))
+            site.demand_unsourced = 0
+            rec["investleech"].append(float(np.nanmean(invest_leech_h[span])))
+            rec["conc"].append(float(site.est.concurrency.mean()))
             rec["refused"].append(float(refused_h[span].sum()))
             rec["kappa"].append(float(site.kappa))
             rec["members"].append(float(site.mem_node.size))
@@ -966,6 +1153,13 @@ def run(
         burn_invest=np.asarray(rec["invest"]),
         served_share=np.asarray(rec["servedshare"]),
         multi_leech_share=np.asarray(rec["multileech"]),
+        download_slowdown_quantiles=np.asarray(rec["downloadq"], dtype=float),
+        download_slowdown_by_bytes=np.asarray(rec["downloadqb"], dtype=float),
+        demand_backlog=np.asarray(rec["backlog"], dtype=float),
+        demand_started=np.asarray(rec["demandstarted"], dtype=float),
+        demand_unsourced=np.asarray(rec["demandunsourced"], dtype=float),
+        invest_leech_share=np.asarray(rec["investleech"], dtype=float),
+        concurrency_mean=np.asarray(rec["conc"], dtype=float),
         replan_drops=np.asarray(rec["drops"]),
         replan_joins=np.asarray(rec["joins"]),
         kappa=np.asarray(rec["kappa"]),

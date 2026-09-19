@@ -257,6 +257,94 @@ def test_simulation_respects_every_node_s_disk_budget():
         assert np.all(site.balance >= -1e-9)
 
 
+def _drive(site, rng, hours, *, demand_per_hour=20, decide_every=6):
+    """Advance a site by hand, yielding after every hour's bookkeeping."""
+    for hour in range(hours):
+        site._serve()
+        p_tilde, _, g = site.est.contribution()
+        capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
+        rate, _ = site._pair_reward(g, p_tilde, capacity, log_miss, c, site.target)
+        nodes = rng.integers(0, site.n_n, size=demand_per_hour)
+        torrents = rng.integers(0, site.n_t, size=demand_per_hour)
+        site._start_downloads(nodes, torrents, False)
+        if hour % decide_every == 0:
+            if site._reallocate(g, p_tilde, capacity, completeness, rate):
+                site._rebuild_pairs()
+        if site._finish_downloads():
+            site._rebuild_pairs()
+        yield hour
+
+
+def test_download_of_a_torrent_nobody_holds_is_refused_unpaid():
+    """No member means no copy anywhere: such a download could never finish,
+    yet it would have burned the points and reserved the disk for good."""
+    params = SimParams(n_torrents=200, n_users=10, days=1, initial_fill=0.05, seed=11)
+    catalog, population = build_world(params)
+    site = _Site(params, RewardParams(), catalog, population)
+    held = np.bincount(site.mem_torrent, minlength=site.n_t) > 0
+    empty = int(np.flatnonzero(~held)[0])
+    node = int(np.flatnonzero(site.used + site.size[empty] <= site.disk)[0])
+    balance, used = site.balance.copy(), site.used.copy()
+
+    started, burned, broke = site._start_downloads(
+        np.array([node]), np.array([empty]), False
+    )
+
+    assert (started, burned, broke) == (0, 0.0, 0)
+    assert site.lch_node.size == 0
+    assert np.array_equal(site.balance, balance)
+    assert np.array_equal(site.used, used)
+    # Refused for structure, not for money: counted where survivorship is read.
+    assert site.demand_unsourced == 1
+
+
+def test_every_download_keeps_a_source_until_it_completes():
+    """A swap may not release the last copy of a torrent somebody is
+    downloading — including when two holders each release one copy in the
+    same re-planning batch."""
+    params = SimParams(
+        days=8,
+        n_torrents=300,
+        n_users=60,
+        disk_scale=0.25,
+        moves_per_decision=3,
+        seed=7,
+    )
+    catalog, population = build_world(params)
+    site = _Site(params, RewardParams(kappa=0.05), catalog, population)
+    for _ in _drive(site, np.random.default_rng(8), 240, demand_per_hour=40):
+        members = np.bincount(site.mem_torrent, minlength=site.n_t)
+        assert np.all(members[site.lch_torrent] >= 1)
+        assert np.all(site.lch_left >= 0.0)
+
+
+def test_service_stops_at_the_end_of_the_file():
+    """A download that finishes mid-hour moves only what it had left, is
+    credited with only the fraction of the hour it used, and its completion
+    time is measured against the reference rate."""
+    params = SimParams(n_torrents=50, n_users=24, days=1, initial_fill=0.5, seed=12)
+    catalog, population = build_world(params)
+    site = _Site(params, RewardParams(), catalog, population)
+    site.avail[:] = 1.0
+    held = np.bincount(site.mem_torrent, minlength=site.n_t)
+    eligible = np.flatnonzero((held >= 5) & (held < site.n_n))
+    torrent = int(eligible[np.argmin(site.size[eligible])])
+    node = int(np.argmin(np.where(site.holds[:, torrent], np.inf, site.down)))
+    assert not site.holds[node, torrent]
+    swarm_up = site.up[site.mem_node[site.mem_torrent == torrent]].sum()
+    assert swarm_up >= site.down[node], "scenario needs a swarm faster than the line"
+
+    site._start_downloads(np.array([node]), np.array([torrent]), False)
+    site._serve()
+
+    # Served at its own line, the small file finishes inside the hour.
+    assert site.lch_left[0] == 0.0
+    assert 0.0 < site.lch_time[0] < 1.0
+    site._finish_downloads()
+    ratio = float(np.concatenate(site.finished)[0])
+    assert ratio == pytest.approx(min(site.down[node], site.d_ref) / site.down[node])
+
+
 def test_importance_target_mode_moves_the_target_not_the_pay():
     importance = np.array([-1.0, 0.0, 2.0])
     pay = RewardParams(importance_mode="pay")
