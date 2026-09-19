@@ -4,7 +4,7 @@ __generated_with = "0.24.2"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     import matplotlib.pyplot as plt
@@ -69,7 +69,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     ui_gamma = mo.ui.slider(
         start=1.0,
@@ -155,7 +155,7 @@ def _(
     x_star = d_ref / par.c_star
     # One node's credited contribution g_v = p b / k, at a typical concurrency.
     g_unit = float(np.median(pop.availability * pop.up_mbps) / 3.0)
-    return cat, d_ref, g_unit, par, pop, x_star
+    return cat, g_unit, par, x_star
 
 
 @app.cell(hide_code=True)
@@ -171,7 +171,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(health, health_marginal, np, par, plt, x_star):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 3.1))
     _c = np.linspace(1.0, 8.0, 600)
@@ -253,7 +253,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(g_unit, health, np, par, plt, ui_ptilde, x_star):
     _p = float(ui_ptilde.value)
     _g = g_unit  # one node's credited contribution, from the sampled world
@@ -314,7 +314,7 @@ def _(g_unit, health, np, par, plt, ui_ptilde, x_star):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, np, par, ui_ptilde):
     n_alive = int(np.ceil(np.log1p(-par.pi_min) / np.log1p(-float(ui_ptilde.value))))
     if n_alive <= 1:
@@ -399,7 +399,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(g_unit, health, np, par, slowdown, slowdown_plain, ui_ptilde, x_star):
     cmp_n = np.arange(0, 41)
     cmp_cap = cmp_n * g_unit
@@ -424,8 +424,6 @@ def _(g_unit, health, np, par, slowdown, slowdown_plain, ui_ptilde, x_star):
     return (
         cmp_avail,
         cmp_c,
-        cmp_cap,
-        cmp_dref,
         cmp_dh,
         cmp_h,
         cmp_mint,
@@ -436,9 +434,19 @@ def _(g_unit, health, np, par, slowdown, slowdown_plain, ui_ptilde, x_star):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
-    cmp_c, cmp_h, cmp_mint, cmp_mint_h, cmp_n, cmp_pay, cmp_style, health, np, par, plt
+    cmp_c,
+    cmp_h,
+    cmp_mint,
+    cmp_mint_h,
+    cmp_n,
+    cmp_pay,
+    cmp_style,
+    health,
+    np,
+    par,
+    plt,
 ):
     _fig, _ax = plt.subplots(1, 4, figsize=(14.0, 3.2))
     for _k, (_col, _lab) in cmp_style.items():
@@ -497,7 +505,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(cmp_n, cmp_pay, mo, np):
     def entry_equilibrium(rule, theta):
         """Seeder counts that survive free entry at outside option ``theta``.
@@ -539,7 +547,7 @@ def _(cmp_n, cmp_pay, mo, np):
         r"| $\theta$ | current: grown | current: held | raw: grown |"
         r" raw: held |" + "\n|---|---|---|---|---|\n" + "\n".join(cmp_rows)
     )
-    return cmp_thetas, entry_equilibrium
+    return (entry_equilibrium,)
 
 
 @app.cell(hide_code=True)
@@ -683,7 +691,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(cat, g_unit, health, np, par, plt, x_star):
     def equilibrium_c(eta, sizes, gamma, c_star, alpha, median_size):
         r"""Slowdown at which a torrent of each size stops attracting seeders.
@@ -738,7 +746,7 @@ def _(cat, g_unit, health, np, par, plt, x_star):
     _ax[1].legend(fontsize=7)
     _fig.tight_layout()
     _fig
-    return (equilibrium_c,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -785,7 +793,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np, par, plt):
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.1))
     _alpha = np.linspace(0.0, 0.3, 200)
@@ -828,7 +836,7 @@ def _(np, par, plt):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(cat, mo, n_alive, np):
     phi_mean = float(np.mean(cat.charge))
     i_min = 4.0 * cat.median_size * phi_mean
@@ -856,7 +864,7 @@ def _(cat, mo, n_alive, np):
         ],
         widths="equal",
     )
-    return i_min, phi_mean
+    return
 
 
 @app.cell(hide_code=True)
@@ -874,7 +882,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(g_unit, health, np, par, plt, x_star):
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.1))
     _g = g_unit
