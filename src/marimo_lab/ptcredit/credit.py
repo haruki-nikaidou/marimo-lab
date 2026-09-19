@@ -42,6 +42,20 @@ class RewardParams:
     ``eta`` defaults to ``1.0``, the size-neutral exponent derived in part 2:
     only at ``eta = 1`` does a GiB of disk earn the same reward whatever the
     torrent's size. Earlier drafts of §3.6 started it at ``0.7``.
+
+    ``slowdown_rule`` selects which of the two clamps of §3.3 are applied when
+    the mechanism scores a torrent, which is what part 4 puts in motion:
+
+    ``"clamped"``
+        both, i.e. §3.3 as written — ``max(1, d_ref/x)`` and
+        ``A_i < pi_min -> inf``;
+    ``"no_floor"``
+        the completeness cutoff only, so capacity beyond ``d_ref`` keeps
+        earning;
+    ``"raw"``
+        neither: the bare ratio ``d_ref / x`` of part 2 §3, under which
+        availability is priced only through the ``p_tilde`` discount already
+        inside ``g_v``.
     """
 
     kappa: float = 1.0
@@ -53,6 +67,7 @@ class RewardParams:
     m: float = 24.0
     half_life_h: float = 14.0 * 24.0
     importance_mode: str = "pay"
+    slowdown_rule: str = "clamped"
 
     def torrent_target(self, importance) -> np.ndarray:
         """Per-torrent ``C*``."""
@@ -67,6 +82,22 @@ class RewardParams:
         if self.importance_mode == "target":
             return np.ones(importance.shape)
         return 2.0**importance
+
+    def torrent_slowdown(self, capacity, completeness, d_ref) -> np.ndarray:
+        """``C_i`` under the configured ``slowdown_rule``.
+
+        The mechanism scores torrents through this method and nothing else, so
+        a rule change reaches the health, the leave-one-out marginal and the
+        seeders' own candidate valuation at once.
+        """
+        ratio = slowdown_plain(capacity, d_ref)
+        if self.slowdown_rule == "raw":
+            return ratio
+        if self.slowdown_rule != "no_floor":
+            ratio = np.maximum(1.0, ratio)
+        return np.where(
+            np.asarray(completeness, dtype=float) >= self.pi_min, ratio, np.inf
+        )
 
 
 def health(slowdown_c, c_star=1.5, gamma=4.0):

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .credit import NodeEstimator, RewardParams, health, slowdown
+from .credit import NodeEstimator, RewardParams, health
 from .world import (
     DEFAULT_BANDWIDTH,
     DEFAULT_MIX,
@@ -86,6 +86,17 @@ class SimResult:
     c_quantiles_all: np.ndarray
     #: (T, 3) the same quantiles conditional on ``A_i >= pi_min``.
     c_quantiles: np.ndarray
+    #: (T, 3) p10 / p50 / p90 of the *physical* ratio ``d_ref / x_i`` over the
+    #: whole catalogue — the same quantity under every scoring rule, with
+    #: neither clamp applied.  ``c_quantiles_all`` is what the mechanism pays
+    #: on and is therefore censored differently by each rule; this is what the
+    #: capacity actually is, and cross-rule comparisons belong here.
+    c_physical_quantiles: np.ndarray
+    #: (T, 3) the physical ratio conditional on ``A_i >= pi_min``.  The
+    #: whole-catalogue p90 is dominated by torrents with no members at all —
+    #: already reported by ``unavailable_fraction`` — so the tail of the
+    #: *served* catalogue is read here.
+    c_physical_avail: np.ndarray
     c_by_class: np.ndarray  # (T, n_classes): median available C_i per class
     #: Fraction of the catalogue with ``A_i < pi_min``.  Every membership in
     #: this engine is a *complete* seeder, so this is not "no copy exists" —
@@ -94,9 +105,30 @@ class SimResult:
     unavailable_fraction: np.ndarray
     health_mean: np.ndarray
     delta_health_mean: np.ndarray
-    #: Points minted / burned per recording interval (not per hour).
+    #: Points minted / burned per recording interval (not per hour).  ``burn``
+    #: covers every charged download — demand *and* a seeder's acquisition of
+    #: a new holding, which leaves the economy in exactly the same way.
+    #: ``burn_invest`` is the acquisition part on its own, so the demand part
+    #: is ``burn - burn_invest``.
     mint: np.ndarray
     burn: np.ndarray
+    burn_invest: np.ndarray
+    #: The part of ``mint`` paid by the flat floor ``alpha`` rather than by a
+    #: marginal contribution — §8's "share of mint from alpha" instrument.
+    #: ``mint - mint_floor`` is what the health term actually bought.
+    mint_floor: np.ndarray
+    #: Share of offered swarm capacity actually drawn, over torrents that
+    #: had at least one leecher, and share of leecher-hours spent on a swarm
+    #: with two or more concurrent leechers.  Together they say whether
+    #: capacity beyond one reference downlink is reaching anybody.
+    served_share: np.ndarray
+    multi_leech_share: np.ndarray
+    #: Memberships released / acquired by re-planning, per recording interval.
+    #: A holding whose marginal has collapsed is worth only ``alpha`` per GiB,
+    #: so churn is how the mechanism recycles disk toward torrents that still
+    #: pay; a rule under which nothing ever becomes worthless stops moving.
+    replan_drops: np.ndarray
+    replan_joins: np.ndarray
     kappa: np.ndarray
     members_total: np.ndarray
     seeders_tracked: np.ndarray  # (T, n_tracked)
@@ -109,6 +141,11 @@ class SimResult:
     population: Population = field(repr=False)
     final_capacity: np.ndarray = field(repr=False)
     final_slowdown: np.ndarray = field(repr=False)
+    #: ``A_i`` at the end of the run.  Reported separately from the slowdown
+    #: because under a rule without the completeness cutoff ``C_i`` stays
+    #: finite on a torrent no complete copy is reliably online for, and the
+    #: comparison in part 4 needs the physical quantity in both worlds.
+    final_completeness: np.ndarray = field(repr=False)
     final_members: np.ndarray = field(repr=False)
     final_contribution: np.ndarray = field(repr=False)
     final_balance: np.ndarray = field(repr=False)
@@ -167,6 +204,11 @@ class SimResult:
             "p90_C_all": float(np.mean(self.c_quantiles_all[sl, 2])),
             "avail_median_C": float(np.mean(self.c_quantiles[sl, 1])),
             "avail_p90_C": float(np.mean(self.c_quantiles[sl, 2])),
+            "median_C_phys": float(np.mean(self.c_physical_quantiles[sl, 1])),
+            "avail_median_C_phys": float(np.mean(self.c_physical_avail[sl, 1])),
+            "avail_p90_C_phys": float(np.mean(self.c_physical_avail[sl, 2])),
+            "served_share": float(np.nanmean(self.served_share[sl])),
+            "multi_leech_share": float(np.nanmean(self.multi_leech_share[sl])),
             # ptp over a series that may contain inf is nan; report the swing
             # of the finite part and let oscillation() carry the real signal.
             "swing_C": float(np.ptp(finite_median))
@@ -175,6 +217,9 @@ class SimResult:
             "oscillation": self.oscillation(),
             "unavailable_fraction": float(np.mean(self.unavailable_fraction[sl])),
             "mint_burn": float(self.mint[sl].sum() / max(self.burn[sl].sum(), 1e-9)),
+            "alpha_share": float(
+                self.mint_floor[sl].sum() / max(self.mint[sl].sum(), 1e-9)
+            ),
             "kappa": float(self.kappa[-1]),
             # refused is an interval total, so divide by the hours the tail
             # actually represents rather than assuming one sample per hour.
@@ -410,6 +455,21 @@ class _Site:
         node_rate = np.bincount(
             self.mem_node, offer * frac[self.mem_torrent], minlength=self.n_n
         )
+        # Demand-side telemetry.  Swarm capacity above one leecher's downlink
+        # is only wasted if the swarm is not serving several leechers at
+        # once, so whether over-provisioning is waste has to be measured,
+        # not assumed: ``served_share`` is the fraction of the offered
+        # capacity actually drawn on torrents that had a leecher this hour,
+        # and ``multi_leech_share`` the fraction of leecher-hours spent on a
+        # swarm with at least two concurrent leechers.
+        busy = leech_count > 0
+        offered = float(capacity_true[busy].sum())
+        self.served_share = float(served.sum() / offered) if offered > 0.0 else np.nan
+        self.multi_leech_share = (
+            float(np.mean(leech_count[self.lch_torrent] >= 2))
+            if self.lch_torrent.size
+            else np.nan
+        )
         self.est.observe(self.all_active, online, busy_nodes > 0, node_rate, busy_nodes)
         return online
 
@@ -421,7 +481,7 @@ class _Site:
             self.mem_torrent, miss[self.mem_node], minlength=self.n_t
         )
         completeness = -np.expm1(log_miss)
-        c = slowdown(capacity, completeness, self.d_ref, self.r.pi_min)
+        c = self.r.torrent_slowdown(capacity, completeness, self.d_ref)
         return capacity, completeness, log_miss, c
 
     def _pair_reward(self, g, p_tilde, capacity, log_miss, c, target):
@@ -439,11 +499,10 @@ class _Site:
             self.pair_inv, miss[self.mem_node], minlength=self.pair_torrent.size
         )
         t = self.pair_torrent
-        c_loo = slowdown(
+        c_loo = self.r.torrent_slowdown(
             capacity[t] - g_pair,
             -np.expm1(log_miss[t] - miss_pair),
             self.d_ref,
-            self.r.pi_min,
         )
         delta = health(c[t], target[t], self.r.gamma) - health(
             c_loo, target[t], self.r.gamma
@@ -579,10 +638,15 @@ class _Site:
         improvements, pairing its j-th worst holding against its j-th best
         candidate.  One move per decision would take a node holding hundreds of
         torrents most of a simulated year to reshuffle its library.
+
+        Returns ``(drops, joins, burn)``: memberships released, acquisitions
+        started, and the points those acquisitions burned.  An investment
+        download is charged exactly like a demand download, so its burn is
+        part of the monetary loop of §3.7 and not a side effect to discard.
         """
         chosen = np.flatnonzero(self.rng.random(self.n_n) < self.p.decision_share)
         if chosen.size == 0 or self.mem_node.size == 0:
-            return False
+            return 0, 0, 0.0
         k_nodes = chosen.size
         moves = int(self.p.moves_per_decision)
 
@@ -627,11 +691,11 @@ class _Site:
         joined = 1.0 - (1.0 - avail_c) * (1.0 - p_tilde[chosen][:, None])
         target_c = self.target[cand]
         gain = health(
-            slowdown(cap_c + g_v, joined, self.d_ref, self.r.pi_min),
+            self.r.torrent_slowdown(cap_c + g_v, joined, self.d_ref),
             target_c,
             self.r.gamma,
         ) - health(
-            slowdown(cap_c, avail_c, self.d_ref, self.r.pi_min),
+            self.r.torrent_slowdown(cap_c, avail_c, self.d_ref),
             target_c,
             self.r.gamma,
         )
@@ -675,7 +739,8 @@ class _Site:
             take_cand[j] = add | swap
             take_drop[j] = swap
 
-        if take_drop.any():
+        drops = int(take_drop.sum())
+        if drops:
             drop = np.zeros(self.mem_node.size, dtype=bool)
             drop[hold_row[take_drop]] = True
             self._drop_members(drop)
@@ -688,8 +753,8 @@ class _Site:
                 nodes.astype(np.int64) * self.n_t + torrents, return_index=True
             )
             nodes, torrents = nodes[keep], torrents[keep]
-        started, _, _ = self._start_downloads(nodes, torrents, True)
-        return bool(take_drop.any() or started)
+        started, burned, _ = self._start_downloads(nodes, torrents, True)
+        return drops, started, burned
 
 
 def run(
@@ -704,12 +769,17 @@ def run(
     if catalog is None or population is None:
         catalog, population = build_world(params, bandwidth=bandwidth)
     site = _Site(params, reward, catalog, population)
-
     total_h = int(params.days * 24)
     window = int(params.kappa_window_days * 24)
     mint_h = np.zeros(total_h)
+    mint_floor_h = np.zeros(total_h)
     burn_h = np.zeros(total_h)
     refused_h = np.zeros(total_h)
+    invest_h = np.zeros(total_h)
+    drops_h = np.zeros(total_h)
+    joins_h = np.zeros(total_h)
+    served_share_h = np.full(total_h, np.nan)
+    multi_leech_h = np.full(total_h, np.nan)
     tracked = np.argsort(-catalog.demand_share)[: params.n_tracked]
     starts_per_hour = params.starts_per_user_day * params.n_users / 24.0
     n_classes = len(catalog.class_names)
@@ -720,11 +790,19 @@ def run(
             "hours",
             "cqall",
             "cq",
+            "cqphys",
+            "cqphysavail",
             "cclass",
             "dead",
             "hmean",
             "dmean",
             "mint",
+            "mintfloor",
+            "invest",
+            "drops",
+            "joins",
+            "servedshare",
+            "multileech",
             "burn",
             "kappa",
             "members",
@@ -741,6 +819,8 @@ def run(
             site._rebuild_pairs()
             dirty = False
         online = site._serve()
+        served_share_h[hour] = site.served_share
+        multi_leech_h[hour] = site.multi_leech_share
 
         p_tilde, _, g = site.est.contribution()
         capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
@@ -757,6 +837,16 @@ def run(
         earned = np.where(online_pair > 0, pair_rate, 0.0)
         site.balance += np.bincount(site.pair_user, earned, minlength=site.n_u)
         mint_h[hour] = earned.sum()
+        # r = kappa w S**eta (alpha + dH), so the flat-floor part of a pair's
+        # rate is that same rate scaled by alpha / (alpha + dH).  Recovering it
+        # this way costs one divide instead of a second reward pass.
+        floor_part = np.divide(
+            reward.alpha,
+            reward.alpha + delta,
+            out=np.zeros_like(delta),
+            where=earned > 0.0,
+        )
+        mint_floor_h[hour] = float((earned * floor_part).sum())
 
         n_start = site.rng.poisson(starts_per_hour)
         nodes = site.rng.integers(0, site.n_n, size=n_start)
@@ -776,7 +866,17 @@ def run(
                     c,
                     site.target * params.stay_bonus,
                 )
-            dirty |= site._reallocate(g, p_tilde, capacity, completeness, incumbent)
+            drops, joins, invested = site._reallocate(
+                g, p_tilde, capacity, completeness, incumbent
+            )
+            # A seeder acquiring a torrent pays for it exactly like a leecher
+            # does, so those points leave the economy and belong in the burn
+            # the kappa controller reads.
+            burn_h[hour] += invested
+            invest_h[hour] = invested
+            drops_h[hour] = drops
+            joins_h[hour] = joins
+            dirty |= bool(drops or joins)
         dirty |= site._finish_downloads()
 
         if (hour + 1) % 24 == 0:
@@ -796,11 +896,24 @@ def run(
 
         if (hour + 1) % params.record_every_h == 0:
             span = slice(hour + 1 - params.record_every_h, hour + 1)
-            available = np.isfinite(c)
+            # "Available" is the *physical* condition A_i >= pi_min, not
+            # "C_i came out finite": a rule that drops the completeness cutoff
+            # still leaves the catalogue with torrents no complete copy is
+            # reliably online for, and they must keep being counted.
+            available = (completeness >= reward.pi_min) & np.isfinite(c)
             rec["hours"].append(float(hour + 1))
             # method="lower" is an order statistic, so inf never enters an
             # interpolation and the unavailable tail reads inf, not nan.
             rec["cqall"].append(np.quantile(c, [0.1, 0.5, 0.9], method="lower"))
+            physical = np.where(
+                capacity > 0.0, site.d_ref / np.maximum(capacity, 1e-300), np.inf
+            )
+            rec["cqphys"].append(np.quantile(physical, [0.1, 0.5, 0.9], method="lower"))
+            rec["cqphysavail"].append(
+                np.quantile(physical[available], [0.1, 0.5, 0.9], method="lower")
+                if available.any()
+                else [np.nan] * 3
+            )
             rec["cq"].append(
                 np.quantile(c[available], [0.1, 0.5, 0.9])
                 if available.any()
@@ -820,7 +933,13 @@ def run(
             # Interval sums, not the single hour that happens to be sampled:
             # mint and burn are flows and acceptance() adds these up.
             rec["mint"].append(float(mint_h[span].sum()))
+            rec["mintfloor"].append(float(mint_floor_h[span].sum()))
             rec["burn"].append(float(burn_h[span].sum()))
+            rec["invest"].append(float(invest_h[span].sum()))
+            rec["drops"].append(float(drops_h[span].sum()))
+            rec["joins"].append(float(joins_h[span].sum()))
+            rec["servedshare"].append(float(np.nanmean(served_share_h[span])))
+            rec["multileech"].append(float(np.nanmean(multi_leech_h[span])))
             rec["refused"].append(float(refused_h[span].sum()))
             rec["kappa"].append(float(site.kappa))
             rec["members"].append(float(site.mem_node.size))
@@ -830,17 +949,25 @@ def run(
             rec["bq"].append(np.quantile(site.balance, [0.1, 0.5, 0.9]))
 
     p_tilde, _, g = site.est.contribution()
-    capacity, _, _, c = site._torrent_state(g, p_tilde)
+    capacity, completeness, _, c = site._torrent_state(g, p_tilde)
     return SimResult(
         hours=np.asarray(rec["hours"]),
         c_quantiles_all=np.asarray(rec["cqall"], dtype=float),
         c_quantiles=np.asarray(rec["cq"], dtype=float),
+        c_physical_quantiles=np.asarray(rec["cqphys"], dtype=float),
+        c_physical_avail=np.asarray(rec["cqphysavail"], dtype=float),
         c_by_class=np.asarray(rec["cclass"], dtype=float),
         unavailable_fraction=np.asarray(rec["dead"]),
         health_mean=np.asarray(rec["hmean"]),
         delta_health_mean=np.asarray(rec["dmean"]),
         mint=np.asarray(rec["mint"]),
+        mint_floor=np.asarray(rec["mintfloor"]),
         burn=np.asarray(rec["burn"]),
+        burn_invest=np.asarray(rec["invest"]),
+        served_share=np.asarray(rec["servedshare"]),
+        multi_leech_share=np.asarray(rec["multileech"]),
+        replan_drops=np.asarray(rec["drops"]),
+        replan_joins=np.asarray(rec["joins"]),
         kappa=np.asarray(rec["kappa"]),
         members_total=np.asarray(rec["members"]),
         seeders_tracked=np.asarray(rec["tracked"], dtype=float),
@@ -851,6 +978,7 @@ def run(
         population=population,
         final_capacity=capacity,
         final_slowdown=c,
+        final_completeness=completeness,
         final_members=np.bincount(site.mem_torrent, minlength=site.n_t),
         final_contribution=g,
         final_balance=site.balance.copy(),

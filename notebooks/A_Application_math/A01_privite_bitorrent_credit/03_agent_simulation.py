@@ -236,6 +236,7 @@ def _(mo, runs, scales):
         "unavailable_fraction",
         "swing_C",
         "mint_burn",
+        "alpha_share",
         "kappa",
     )
     _head = "| disk supply | " + " | ".join(_keys) + " | seeders/torrent |"
@@ -777,10 +778,13 @@ def _(mo, np, runs, variant_runs):
        moves the median $C_i$, which is the property §4 argued for. What it
        does not do is hold the median *at* $C^*$: the median torrent sits at
        {_sweep["median_C_all"]:.2f}, over-provisioned, so $\Delta H \approx 0$
-       and the flat floor $\alpha$ is what actually pays most memberships.
-       $\alpha$ is not a rounding term, it is the main reward. The share of
-       mint coming from $\alpha$ belongs in §8's permanent instrumentation
-       list next to the $\Delta H$ histogram.
+       and the flat floor $\alpha$ is what actually pays most memberships:
+       {_sweep["alpha_share"]:.0%} of all points minted at ×1 disk come from
+       the floor rather than from any marginal contribution, rising to
+       {runs[4.0].acceptance(days=7)["alpha_share"]:.0%} at ×4. $\alpha$ is
+       not a rounding term, it is the main reward, and that share belongs in
+       §8's permanent instrumentation list next to the $\Delta H$
+       histogram.
 
     2. **Scarcity shows up as lost availability, not as slowdown.** At ×0.25
        disk the available-torrent median is still
