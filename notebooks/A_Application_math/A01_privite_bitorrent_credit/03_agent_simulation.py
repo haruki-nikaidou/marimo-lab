@@ -75,7 +75,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     ui_days = mo.ui.slider(
         start=15, stop=90, step=5, value=40, label="days", show_value=True
@@ -150,7 +150,7 @@ def _(mo):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     RewardParams,
     SimParams,
@@ -182,7 +182,7 @@ def _(
     return base, reward
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(run):
     from dataclasses import replace
 
@@ -226,7 +226,7 @@ def _(base, reward, sweep):
     return runs, scales
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, runs, scales):
     _keys = (
         "median_C_all",
@@ -253,8 +253,8 @@ def _(mo, runs, scales):
     return
 
 
-@app.cell
-def _(np, plt, runs, scales):
+@app.cell(hide_code=True)
+def _(plt, runs, scales):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 3.2), sharex=True)
     for _s, _c in zip(scales, ("C0", "C1", "C2"), strict=True):
         _r = runs[_s]
@@ -280,7 +280,7 @@ def _(np, plt, runs, scales):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np, plt, runs, scales):
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.2))
     for _s, _c in zip(scales, ("C0", "C1", "C2"), strict=True):
@@ -442,7 +442,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(plt, runs, scales):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 3.1))
     for _s, _c in zip(scales, ("C0", "C1", "C2"), strict=True):
@@ -510,7 +510,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np, plt, runs):
     _r = runs[1.0]
     _g = _r.final_contribution
@@ -588,10 +588,10 @@ def _(RewardParams, base, mo, reward, simulate):
         _name: simulate(_rw, base, **_ov) for _name, (_rw, _ov) in variants.items()
     }
     mo.md(f"ran {len(variant_runs)} variants")
-    return variant_runs, variants
+    return (variant_runs,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, variant_runs):
     _keys = (
         "median_C_all",
@@ -614,7 +614,7 @@ def _(mo, variant_runs):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np, plt, variant_runs):
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.4))
     _names = list(variant_runs)

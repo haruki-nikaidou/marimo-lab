@@ -16,7 +16,7 @@ def _():
     plt.rcParams.update(
         {"figure.dpi": 130, "font.size": 9.0, "axes.grid": True, "grid.alpha": 0.3}
     )
-    return W, mo, norm, np, plt
+    return W, mo, np, plt
 
 
 @app.cell(hide_code=True)
@@ -83,7 +83,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     ui_sigma_down = mo.ui.slider(
         start=0.3,
@@ -126,11 +126,27 @@ def _(mo):
             mo.hstack([ui_n_torrents, ui_n_users, ui_seed], widths="equal"),
         ]
     )
-    return ui_n_torrents, ui_n_users, ui_rho, ui_seed, ui_sigma_down, ui_sigma_up
+    return (
+        ui_n_torrents,
+        ui_n_users,
+        ui_rho,
+        ui_seed,
+        ui_sigma_down,
+        ui_sigma_up,
+    )
 
 
 @app.cell
-def _(W, np, ui_n_torrents, ui_n_users, ui_rho, ui_seed, ui_sigma_down, ui_sigma_up):
+def _(
+    W,
+    np,
+    ui_n_torrents,
+    ui_n_users,
+    ui_rho,
+    ui_seed,
+    ui_sigma_down,
+    ui_sigma_up,
+):
     bw = W.BandwidthModel(
         sigma_down=float(ui_sigma_down.value),
         sigma_up=float(ui_sigma_up.value),
@@ -140,7 +156,7 @@ def _(W, np, ui_n_torrents, ui_n_users, ui_rho, ui_seed, ui_sigma_down, ui_sigma
     catalog = W.sample_catalog(int(ui_n_torrents.value), rng)
     population = W.sample_population(int(ui_n_users.value), rng, bandwidth=bw)
     mu_down, mu_up = W.calibrate_bandwidth(bw)
-    return bw, catalog, mu_down, mu_up, population, rng
+    return bw, catalog, population, rng
 
 
 @app.cell(hide_code=True)
@@ -156,7 +172,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(W, catalog, mo, np):
     _rows = []
     for _j, _cls in enumerate(W.DEFAULT_SIZE_CLASSES):
@@ -174,7 +190,7 @@ def _(W, catalog, mo, np):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(W, catalog, mo, np):
     _order = np.argsort(catalog.size_gib)
     _top = _order[-max(1, catalog.n_torrents // 100) :]
@@ -203,7 +219,7 @@ def _(W, catalog, mo, np):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(W, catalog, np, plt):
     _fig, _ax = plt.subplots(1, 2, figsize=(9.5, 3.2))
     _edges = np.logspace(-2, 3.5, 90)
@@ -246,8 +262,8 @@ def _(mo):
     return
 
 
-@app.cell
-def _(W, bw, mo, norm, np, rng):
+@app.cell(hide_code=True)
+def _(W, bw, mo, np, rng):
     check_d, check_u, _ = W.sample_bandwidth(200_000, rng, bw)
     cap_d, cap_u = bw.cap_quantiles
     mo.hstack(
@@ -288,7 +304,7 @@ def _(W, bw, mo, norm, np, rng):
     return check_d, check_u
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(bw, check_d, check_u, np, plt):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 3.2))
     _sub = slice(0, 20_000)
@@ -340,7 +356,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np, plt, population):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 3.0))
     _ax[0].hist(population.availability, bins=60)
@@ -377,7 +393,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(catalog, mo, np, population):
     d_ref = float(np.median(population.down_mbps))
     x_star = d_ref / 1.5
@@ -408,7 +424,7 @@ def _(catalog, mo, np, population):
         ],
         widths="equal",
     )
-    return catalog_bytes, d_ref, g_typical, site_disk, x_star
+    return catalog_bytes, g_typical, site_disk, x_star
 
 
 @app.cell(hide_code=True)
@@ -444,7 +460,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(catalog, np, plt):
     _fig, _ax = plt.subplots(1, 3, figsize=(11.5, 2.9))
     _srt = np.sort(catalog.demand_share)[::-1]
