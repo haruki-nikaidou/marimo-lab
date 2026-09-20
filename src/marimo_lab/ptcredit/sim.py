@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .credit import NodeEstimator, RewardParams, health
+from .credit import NodeEstimator, RewardParams
 from .world import (
     DEFAULT_BANDWIDTH,
     DEFAULT_MIX,
@@ -46,6 +46,16 @@ def _weighted_quantile(values, weights, qs) -> list[float]:
     cumulative = np.cumsum(weights[order])
     picks = np.searchsorted(cumulative, np.asarray(qs) * cumulative[-1], side="left")
     return [float(values[order][min(int(k), order.size - 1)]) for k in picks]
+
+
+def _mean_or_nan(values) -> float:
+    """Mean of the finite entries, ``nan`` when there are none.
+
+    Hourly telemetry is ``nan`` for an hour with no leecher, and a whole
+    recording interval can be empty on a small or scarce site.
+    """
+    finite = values[np.isfinite(values)]
+    return float(finite.mean()) if finite.size else float("nan")
 
 
 @dataclass(frozen=True)
@@ -579,7 +589,7 @@ class _Site:
         c = self.r.torrent_slowdown(capacity, completeness, self.d_ref)
         return capacity, completeness, log_miss, c
 
-    def _pair_reward(self, g, p_tilde, capacity, log_miss, c, target):
+    def _pair_reward(self, g, p_tilde, capacity, completeness, log_miss, target):
         """Points/hour each (user, torrent) pair would earn while online.
 
         ``target`` is the per-torrent ``C*``.  Passing an inflated target is how
@@ -594,14 +604,16 @@ class _Site:
             self.pair_inv, miss[self.mem_node], minlength=self.pair_torrent.size
         )
         t = self.pair_torrent
-        c_loo = self.r.torrent_slowdown(
+        h_full = self.r.torrent_health(
+            capacity[t], completeness[t], self.d_ref, target[t]
+        )
+        h_loo = self.r.torrent_health(
             capacity[t] - g_pair,
             -np.expm1(log_miss[t] - miss_pair),
             self.d_ref,
+            target[t],
         )
-        delta = health(c[t], target[t], self.r.gamma) - health(
-            c_loo, target[t], self.r.gamma
-        )
+        delta = h_full - h_loo
         rate = (
             self.kappa
             * self.weight[t]
@@ -816,15 +828,9 @@ class _Site:
         cap_c, avail_c = capacity[cand], completeness[cand]
         joined = 1.0 - (1.0 - avail_c) * (1.0 - p_tilde[chosen][:, None])
         target_c = self.target[cand]
-        gain = health(
-            self.r.torrent_slowdown(cap_c + g_v, joined, self.d_ref),
-            target_c,
-            self.r.gamma,
-        ) - health(
-            self.r.torrent_slowdown(cap_c, avail_c, self.d_ref),
-            target_c,
-            self.r.gamma,
-        )
+        gain = self.r.torrent_health(
+            cap_c + g_v, joined, self.d_ref, target_c
+        ) - self.r.torrent_health(cap_c, avail_c, self.d_ref, target_c)
         size_c = self.size[cand]
         value = (
             self.kappa
@@ -984,9 +990,9 @@ def run(
 
         p_tilde, _, g = site.est.contribution()
         capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
-        h = health(c, site.target, reward.gamma)
+        h = site.r.torrent_health(capacity, completeness, site.d_ref, site.target)
         pair_rate, delta = site._pair_reward(
-            g, p_tilde, capacity, log_miss, c, site.target
+            g, p_tilde, capacity, completeness, log_miss, site.target
         )
 
         online_pair = np.bincount(
@@ -1023,8 +1029,8 @@ def run(
                     g,
                     p_tilde,
                     capacity,
+                    completeness,
                     log_miss,
-                    c,
                     site.target * params.stay_bonus,
                 )
             drops, joins, invested = site._reallocate(
@@ -1099,8 +1105,8 @@ def run(
             rec["invest"].append(float(invest_h[span].sum()))
             rec["drops"].append(float(drops_h[span].sum()))
             rec["joins"].append(float(joins_h[span].sum()))
-            rec["servedshare"].append(float(np.nanmean(served_share_h[span])))
-            rec["multileech"].append(float(np.nanmean(multi_leech_h[span])))
+            rec["servedshare"].append(_mean_or_nan(served_share_h[span]))
+            rec["multileech"].append(_mean_or_nan(multi_leech_h[span]))
             finished = np.concatenate(site.finished) if site.finished else np.empty(0)
             finished_size = (
                 np.concatenate(site.finished_size)
@@ -1125,7 +1131,7 @@ def run(
             rec["demandstarted"].append(float(demand_started_h[span].sum()))
             rec["demandunsourced"].append(float(site.demand_unsourced))
             site.demand_unsourced = 0
-            rec["investleech"].append(float(np.nanmean(invest_leech_h[span])))
+            rec["investleech"].append(_mean_or_nan(invest_leech_h[span]))
             rec["conc"].append(float(site.est.concurrency.mean()))
             rec["refused"].append(float(refused_h[span].sum()))
             rec["kappa"].append(float(site.kappa))

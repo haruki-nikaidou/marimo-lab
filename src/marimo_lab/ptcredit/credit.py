@@ -43,19 +43,29 @@ class RewardParams:
     only at ``eta = 1`` does a GiB of disk earn the same reward whatever the
     torrent's size. Earlier drafts of §3.6 started it at ``0.7``.
 
-    ``slowdown_rule`` selects which of the two clamps of §3.3 are applied when
-    the mechanism scores a torrent, which is what part 4 puts in motion:
+    ``floor`` applies ``max(1, d_ref/x)`` of §3.3: capacity beyond one
+    reference downlink earns nothing.  Part 4 prices it and drops it.
 
-    ``"clamped"``
-        both, i.e. §3.3 as written — ``max(1, d_ref/x)`` and
-        ``A_i < pi_min -> inf``;
-    ``"no_floor"``
-        the completeness cutoff only, so capacity beyond ``d_ref`` keeps
-        earning;
-    ``"raw"``
-        neither: the bare ratio ``d_ref / x`` of part 2 §3, under which
-        availability is priced only through the ``p_tilde`` discount already
-        inside ``g_v``.
+    ``completeness`` says which quantity ``pi_min`` is applied to.  The
+    handoff's ``A_i = 1 - prod(1 - p_tilde_v)`` is the probability a complete
+    copy is *online*, not whether one exists; a fresh uploader holds a 100 %
+    complete copy and still scores ``A_i = p_tilde_v``.
+
+    ``"online_step"``
+        §3.3 as written — ``A_i < pi_min`` makes ``C_i = inf`` and ``H = 0``.
+        This is the quorum cliff: a lone seeder below ``pi_min`` earns
+        ``alpha``, the seeder who lifts ``A_i`` over it is paid all of ``H``;
+    ``"online_cap"``
+        ``H_i = min(H(C_i), min(1, A_i / pi_min))`` — the online probability
+        caps health instead of zeroing it.  For identical seeders it is a
+        minimum of two concave functions of the seeder count, so the
+        marginal is decreasing in that probe; nothing is claimed for
+        heterogeneous leave-one-out memberships;
+    ``"possession"``
+        ``pi_min`` applies to copy completeness, which is 1 for every member
+        of this engine (partial seeders are not modelled) and for any
+        uploader.  Uptime is then priced once, through ``p_tilde_v`` inside
+        ``g_v``, and ``A_i`` does not enter the score.
     """
 
     kappa: float = 1.0
@@ -67,7 +77,8 @@ class RewardParams:
     m: float = 24.0
     half_life_h: float = 14.0 * 24.0
     importance_mode: str = "pay"
-    slowdown_rule: str = "clamped"
+    floor: bool = True
+    completeness: str = "online_step"
 
     def torrent_target(self, importance) -> np.ndarray:
         """Per-torrent ``C*``."""
@@ -84,20 +95,36 @@ class RewardParams:
         return 2.0**importance
 
     def torrent_slowdown(self, capacity, completeness, d_ref) -> np.ndarray:
-        """``C_i`` under the configured ``slowdown_rule``.
+        """``C_i`` under the configured floor and completeness treatment.
 
-        The mechanism scores torrents through this method and nothing else, so
-        a rule change reaches the health, the leave-one-out marginal and the
-        seeders' own candidate valuation at once.
+        Only the ``"step"`` treatment can make ``C_i`` infinite; the other
+        two keep it a finite function of capacity and let
+        :meth:`torrent_health` carry completeness.
         """
         ratio = slowdown_plain(capacity, d_ref)
-        if self.slowdown_rule == "raw":
-            return ratio
-        if self.slowdown_rule != "no_floor":
+        if self.floor:
             ratio = np.maximum(1.0, ratio)
+        if self.completeness != "online_step":
+            return ratio
         return np.where(
             np.asarray(completeness, dtype=float) >= self.pi_min, ratio, np.inf
         )
+
+    def torrent_health(self, capacity, completeness, d_ref, target) -> np.ndarray:
+        """``H_i`` under the configured treatment.
+
+        The mechanism scores torrents through this method and nothing else,
+        so a rule change reaches the health, the leave-one-out marginal and
+        the seeders' own candidate valuation at once.
+        """
+        h = health(
+            self.torrent_slowdown(capacity, completeness, d_ref), target, self.gamma
+        )
+        if self.completeness == "online_cap":
+            h = np.minimum(
+                h, np.minimum(1.0, np.asarray(completeness, dtype=float) / self.pi_min)
+            )
+        return h
 
 
 def health(slowdown_c, c_star=1.5, gamma=4.0):

@@ -36,7 +36,8 @@
    "m": 24.0,
    "half_life_h": 336.0,
    "importance_mode": "pay",
-   "slowdown_rule": "clamped"
+   "floor": true,
+   "completeness": "online_step"
   },
   "no_floor": {
    "kappa": 0.05,
@@ -48,7 +49,8 @@
    "m": 24.0,
    "half_life_h": 336.0,
    "importance_mode": "pay",
-   "slowdown_rule": "no_floor"
+   "floor": false,
+   "completeness": "online_step"
   },
   "raw": {
    "kappa": 0.05,
@@ -60,7 +62,8 @@
    "m": 24.0,
    "half_life_h": 336.0,
    "importance_mode": "pay",
-   "slowdown_rule": "raw"
+   "floor": false,
+   "completeness": "possession"
   }
  },
  "tail_days": 7,

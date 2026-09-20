@@ -155,6 +155,32 @@ def test_plain_slowdown_keeps_neither_clamp():
     )
 
 
+def test_completeness_modes_differ_only_in_how_pi_min_enters():
+    """Identical seeders join one at a time; the marginal a joiner is paid
+    is the leave-one-out difference.  The step pays nothing below the quorum
+    and everything to the seeder that completes it; the cap is decreasing
+    everywhere; possession ignores online availability altogether."""
+    d_ref, p_tilde, g = 300.0, 0.55, 300.0 / 1.5 / 4.0
+    n = np.arange(0, 9)
+    avail = 1.0 - (1.0 - p_tilde) ** n
+    target = np.full(n.shape, 1.5)
+
+    def marginals(mode):
+        rp = RewardParams(floor=False, completeness=mode)
+        return np.diff(rp.torrent_health(n * g, avail, d_ref, target))
+
+    step = marginals("online_step")
+    assert step[0] == 0.0 and step[1] == 0.0 and step[2] > 0.5
+    cap = marginals("online_cap")
+    assert np.all(np.diff(cap) <= 1e-12)
+    assert cap[0] > 0.0
+    possession = marginals("possession")
+    assert np.all(np.diff(possession) <= 1e-12)
+    # The cap binds only where online availability is the bottleneck.
+    assert np.all(cap <= possession + 1e-12)
+    assert cap[-1] == pytest.approx(possession[-1])
+
+
 def test_estimator_is_pessimistic_before_evidence_and_converges_after():
     est = NodeEstimator(2, m=24.0, prior_p=0.55, prior_b=20.0)
     cold = est.availability()[0]
@@ -239,7 +265,9 @@ def test_simulation_respects_every_node_s_disk_budget():
         site._serve()
         p_tilde, _, g = site.est.contribution()
         capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
-        rate, _ = site._pair_reward(g, p_tilde, capacity, log_miss, c, site.target)
+        rate, _ = site._pair_reward(
+            g, p_tilde, capacity, completeness, log_miss, site.target
+        )
         nodes = rng.integers(0, site.n_n, size=20)
         torrents = rng.integers(0, site.n_t, size=20)
         site._start_downloads(nodes, torrents, False)
@@ -263,7 +291,9 @@ def _drive(site, rng, hours, *, demand_per_hour=20, decide_every=6):
         site._serve()
         p_tilde, _, g = site.est.contribution()
         capacity, completeness, log_miss, c = site._torrent_state(g, p_tilde)
-        rate, _ = site._pair_reward(g, p_tilde, capacity, log_miss, c, site.target)
+        rate, _ = site._pair_reward(
+            g, p_tilde, capacity, completeness, log_miss, site.target
+        )
         nodes = rng.integers(0, site.n_n, size=demand_per_hour)
         torrents = rng.integers(0, site.n_t, size=demand_per_hour)
         site._start_downloads(nodes, torrents, False)

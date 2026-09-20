@@ -146,6 +146,12 @@ def _(
         "raw": r"raw $d_{ref}/x$",
     }
     rule_colour = {"clamped": "k", "no_floor": "C0", "raw": "C1"}
+    # (floor, completeness treatment) behind each rule name.
+    rule_fields = {
+        "clamped": (True, "online_step"),
+        "no_floor": (False, "online_step"),
+        "raw": (False, "possession"),
+    }
     scales = (0.25, 1.0, 4.0)
     seeds = tuple(int(ui_seed.value) + _k for _k in range(int(ui_n_seeds.value)))
 
@@ -155,7 +161,8 @@ def _(
             alpha=float(ui_alpha.value),
             gamma=float(ui_gamma.value),
             eta=1.0,
-            slowdown_rule=_rule,
+            floor=rule_fields[_rule][0],
+            completeness=rule_fields[_rule][1],
         )
         for _rule in rules
     }
